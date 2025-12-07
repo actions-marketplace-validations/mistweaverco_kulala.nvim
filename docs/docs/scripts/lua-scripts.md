@@ -11,7 +11,7 @@ Script context has the following objects and functions available:
 - `client` - The client object.
 - `request` - The request object.
 - `response` - The response object.
-- `assert` - The assert object - a colection of assertion functions.
+- `assert` - The assert object - a collection of assertion functions.
 
 as well as access to Neovim's `_G` global table.
 
@@ -22,6 +22,7 @@ For authentication purposes, you can use Kulala's crypto module with `require("k
 ```lua
 local client = {
   global = {}, -- global variables persisted between requests
+  responses = {}, -- responses of previous requests
   clear_all = function() end, -- clear all global variables
   log = function(msg) end, -- log a message
   test = function(name, fn) end, -- alias for assert.test
@@ -52,8 +53,10 @@ local client = {
 ---@field body_computed string|nil -- The computed body as sent by curl; with variables and dynamic variables replaced
 ---@field body_display string|nil -- The body with variables and dynamic variables replaced and sanitized
 local request = {
-  skip = function() end, -- skip the request
-  replay = function() end, -- replay the request
+  skip = function() end, -- skip the request (useful in pre-request scripts)
+  replay = function() end, -- replay the request (useful in post-request scripts)
+  variables = {}, -- request variables, alias for environment (for compatibility with JS scripting)
+  iteration = function() end, -- the current count of request replays
 }
 ```
 
@@ -63,22 +66,37 @@ local request = {
 ---@class Response
 ---@field id string
 ---@field name string -- name of the request
+---
 ---@field url string -- request url
 ---@field method string -- request method
+---@field request { headers_tbl: table, body: string } -- request
+---
 ---@field status boolean -- status of the request
 ---@field code number -- request command exit code
 ---@field response_code number -- http response code
+---
 ---@field duration number -- duration of the request
 ---@field time number -- time of the request
----@field body string -- body of the request
+---
+---@field body string -- body of the response
+---@field body_raw string -- body of the response (unaltered)
 ---@field json table -- json response
----@field headers string -- headers of the request
+---@field filter string|nil -- jq filter if applied
+---
+---@field headers string -- headers of the response
+---@field headers_tbl table -- parsed headers of the response
+---
+---@field cookies table -- received cookies
+---
 ---@field errors string -- errors of the request
 ---@field stats table|string -- stats of the request
+---
 ---@field script_pre_output string
 ---@field script_post_output string
+---
 ---@field assert_output table
 ---@field assert_status boolean
+---
 ---@field file string -- path of the file of the request
 ---@field buf number
 ---@field buf_name string
@@ -200,6 +218,66 @@ Authorization: Bearer {{TOKEN}}
 
 :::tip
 
-If you want to modify request URL, use `request.url_raw`.
+If you want to modify request URL, headers or body, use `request.url_raw`, `request.headers_raw` or `request.body_raw` respectively.
 
 :::
+
+### Changing JSON body of a request
+
+```http
+### Change JSON body
+
+< {%
+  -- lua
+  local json = require("kulala.utils.json")
+  local body = json.parse(request.body)
+
+  body.your_var = "whatever"
+  request.body_raw = json.encode(body)
+%}
+
+POST http://httpbin.org/post HTTP/1.1
+
+{
+  "your_var": "original_value"
+}
+```
+
+### Iterating over results and making requests for each item
+
+```http
+### Request_one
+
+POST https://httpbin.org/post HTTP/1.1
+Accept: application/json
+Content-Type: application/json
+
+{
+  "results": [
+    { "id": 1, "desc": "some_username" },
+    { "id": 2, "desc": "another_username" }
+  ]
+}
+
+### Request_two
+
+< {%
+  -- lua
+  local response = client.responses["Request_one"].json -- get body of the response decoded as json
+  if not response then return end
+
+  local item = response.json.results[request.iteration()]
+  if not item then return request.skip() end   -- skip if no more items
+
+  client.log(item)
+  request.url_raw = request.environment.url .. "?" .. item.desc
+%}
+
+@url = https://httpbin.org/get
+GET {{url}}
+
+> {%
+  -- lua
+  request.replay()
+%}
+```

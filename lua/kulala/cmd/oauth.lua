@@ -4,6 +4,8 @@ local Crypto = require("kulala.cmd.crypto")
 local DB = require("kulala.db")
 local Env = require("kulala.parser.env")
 local Float = require("kulala.ui.float")
+local Fs = require("kulala.utils.fs")
+local Inlay = require("kulala.inlay")
 local Json = require("kulala.utils.json")
 local Logger = require("kulala.logger")
 local Shell = require("kulala.cmd.shell_utils")
@@ -14,7 +16,20 @@ local M = {}
 
 local request_timeout = 30000 -- 30 seconds
 local request_interval = 5000 -- 5 seconds
+local tcp_server
 local co, exit
+
+local function get_curl_flags()
+  if not DB.current_request then return {} end
+
+  local RequestParser = require("kulala.parser.request")
+  local request = vim.deepcopy(DB.current_request)
+
+  return Async.co_wrap(co, function()
+    RequestParser.parse_metadata(request)
+    return RequestParser.process_custom_curl_flags(request)
+  end)
+end
 
 ---@param url string
 ---@param body string
@@ -22,42 +37,74 @@ local co, exit
 ---@param params table|nil - additional parameters for the request
 ---@return table|nil, string|nil - response and error message
 local function make_request(url, body, request_desc, params)
-  local headers = "Content-Type: application/x-www-form-urlencoded"
-  local cmd = { Config.get().curl_path, "-s", "-X", "POST", "-H", headers }
+  local cmd = { Config.get().curl_path, "-s", "-X", "POST", "-H", "Content-Type: application/x-www-form-urlencoded" }
 
-  cmd = params and params.headers and vim.list_extend(cmd, { "-H", params.headers }) or cmd
-  cmd = vim.list_extend(cmd, { "-d", body, url })
+  local headers = params and params.headers or {}
+  local curl_flags = get_curl_flags() or {}
 
-  local error
-  local request = Shell.run(cmd, { err_msg = "Request error", abort_on_stderr = true }, function(system)
-    Async.co_resume(co, system)
+  vim.iter(headers):each(function(header)
+    vim.list_extend(cmd, { "-H", header })
   end)
 
+  vim.list_extend(cmd, curl_flags)
+  vim.list_extend(cmd, { "-d", body, url })
+
+  local request = Shell.run(cmd, { err_msg = "Request error", abort_on_stderr = true }, function(system)
+    Logger.debug("Executed request: " .. request_desc .. "\n" .. vim.inspect(system))
+    vim.schedule(function()
+      Async.co_resume(co, system)
+    end)
+  end)
+
+  local debug_msg = { "Executing request: " .. request_desc, "Url: " .. url, "Payload: " .. body }
+  _ = #headers > 0 and table.insert(debug_msg, "Headers: " .. vim.inspect(headers))
+
+  Logger.debug(table.concat(debug_msg, "\n"))
+
   if not request then return end
-  local status, result = Async.co_yield(co, request_timeout)
 
-  if result == "timeout" then return Logger.error("Request timeout: " .. request_desc) end
-  result = status and result or request:wait()
+  local status, response = Async.co_yield(co, request_timeout)
+  Logger.debug("Response: " .. vim.inspect(response))
 
-  result, error = Json.parse(result.stdout or "{}")
-  if not result then error = "Error parsing authentication response:\n" .. error end
+  if not status then return Logger.error("Request failed: " .. request_desc) end
+  if response == "timeout" then return Logger.error("Request timeout: " .. request_desc) end
+
+  local out = response.stdout == "" and "{}" or response.stdout
+
+  local result, error = Json.parse(out)
+  if not result then error = "Error parsing authentication response: " .. tostring(out) .. "\n" .. error end
 
   if result and result.error and result.error ~= "authorization_pending" then
-    error = result.error .. "\n" .. result.error_description
+    error = result.error .. "\n" .. (result.error_description or "")
   end
   if error then return Logger.error("Failed to: " .. request_desc .. ". " .. error, 2), error end
 
   return result
 end
 
----@return table - get the auth config for the current environment, under Security.Auth
-local function get_auth_config(config_id)
-  local cur_env = vim.g.kulala_selected_env or Config.get().default_env
-  local env = Async.co_wrap(co, function()
-    return Env.get_env() and DB.find_unique("http_client_env") or {}
+local function parse_variables(config, env)
+  local parser = require("kulala.parser.string_variables_parser")
+
+  vim.iter(config):each(function(key, value)
+    if type(value) == "string" then
+      config[key] = parser.parse(value, {}, env, false)
+    elseif type(value) == "table" then
+      config[key] = parse_variables(value, env)
+    end
   end)
 
-  local auth_config = vim.tbl_get(env, cur_env, "Security", "Auth", config_id) or {}
+  return config
+end
+
+---@return table - get the auth config for the current environment, under Security.Auth
+local function get_auth_config(config_id)
+  local env = Async.co_wrap(co, function()
+    return Env.get_env() or {}
+  end) or {}
+
+  local auth_config = vim.tbl_get(env, "Security", "Auth", config_id) or {}
+  auth_config = parse_variables(auth_config, env)
+
   auth_config.auth_data = auth_config.auth_data or {}
 
   return auth_config
@@ -110,6 +157,7 @@ local function add_pkce(config_id, body, request_type)
   local verifier = config.auth_data.pkce_verifier or pkce["Code Verifier"] or Crypto.pkce_verifier()
 
   config.auth_data.pkce_verifier = request_type == "auth" and verifier or nil
+  config = update_auth_data(config_id, config.auth_data, true)
 
   local challenge = Crypto.pkce_challenge(verifier, challenge_method)
 
@@ -124,6 +172,39 @@ local function add_pkce(config_id, body, request_type)
   end
 
   return body
+end
+
+local function add_client_credentials(config_id, body, headers)
+  local config = get_auth_config(config_id)
+  local type = config["Client Credentials"] or "basic"
+
+  headers = headers or {}
+  if type == "none" then return body, headers end
+
+  local required_params = { "Client ID", "Client Secret" }
+  if not validate_auth_params(config_id, required_params) then return body, headers end
+
+  if type == "basic" then
+    local id, secret = vim.uri_encode(config["Client ID"]), vim.uri_encode(config["Client Secret"])
+    table.insert(headers, "Authorization: Basic " .. Crypto.base64_encode(id .. ":" .. secret))
+  end
+
+  if type == "in body" then
+    body = body .. "&client_id=" .. config["Client ID"] .. "&client_secret=" .. config["Client Secret"]
+  end
+
+  return body, headers
+end
+
+---Get custom headers
+---@param config_id string
+local function get_custom_headers(config_id)
+  local config = get_auth_config(config_id)
+  local headers = config["Custom Headers"] or {}
+
+  return vim.iter(headers):fold({}, function(acc, key, value)
+    return vim.list_extend(acc, { key .. ": " .. value })
+  end)
 end
 
 ---Add custom request parameters to the reuqest body
@@ -152,15 +233,17 @@ M.get_device_code = function(config_id)
   local config = get_auth_config(config_id)
   if not validate_auth_params(config_id, { "Client ID", "Device Auth URL" }) then return end
 
+  local headers = get_custom_headers(config_id)
   local url = config["Device Auth URL"]
   local body = "client_id=" .. config["Client ID"]
 
   body = config["Scope"] and body .. "&scope=" .. config["Scope"] or body
+  body, headers = add_client_credentials(config_id, body, headers)
   body = add_custom_params(config_id, body, "In Auth Request")
 
   Logger.info("Acquiring device code for config: " .. config_id)
 
-  local out = make_request(url, body, "acquire device code")
+  local out = make_request(url, body, "acquire device code", { headers = headers })
   if not out then return end
 
   out.acquired_at = os.time()
@@ -183,7 +266,7 @@ M.verify_device_code = function(config_id)
   vim.fn.setreg("+", config.auth_data.user_code)
 end
 
-local function poll_token_server(config, url, body)
+local function poll_token_server(config, url, body, headers)
   local auth = config.auth_data
   local interval = auth.interval and tonumber(auth.interval) * 1000 or request_interval
   local tries = 10
@@ -194,7 +277,7 @@ local function poll_token_server(config, url, body)
   for count = 1, tries do
     Async.co_sleep(co, interval)
 
-    out, err = make_request(url, body, "acquire device token")
+    out, err = make_request(url, body, "acquire device token", { headers = headers })
     err = err or ""
 
     if not out and not err:match("authorization_pending") and not err:match("slow_down") then break end
@@ -219,6 +302,7 @@ M.acquire_device_token = function(config_id)
 
   M.verify_device_code(config_id)
 
+  local headers = get_custom_headers(config_id)
   local url = config["Token URL"]
   local body = "client_id="
     .. config["Client ID"]
@@ -227,11 +311,12 @@ M.acquire_device_token = function(config_id)
     .. "&grant_type=urn:ietf:params:oauth:grant-type:device_code"
 
   body = config["Client Secret"] and body .. "&client_secret=" .. config["Client Secret"] or body
+  body, headers = add_client_credentials(config_id, body, headers)
   body = add_custom_params(config_id, body, "In Token Request")
 
   Logger.info("Acquiring device token for config: " .. config_id)
 
-  local out = poll_token_server(config, url, body) or {}
+  local out = poll_token_server(config, url, body, headers) or {}
   if not out.access_token then return Logger.error("Timeout acquiring device token for config: " .. config_id) end
 
   out.acquired_at = os.time()
@@ -257,17 +342,24 @@ M.receive_code = function(config_id)
   local config = get_auth_config(config_id)
   local url = config["Redirect URL"]
 
-  if not url:find("localhost") and not url:find("127.0.0.1") then
-    return vim.uri_decode(vim.fn.input("Enter the Auth code: "))
+  if not (url:find("localhost") or url:find("127.0.0.1") or config["Browser CMD"]) then
+    local code = vim.uri_decode(vim.fn.input("Enter the Auth code/token: "))
+
+    update_auth_data(config_id, {
+      code = code,
+      expires_in = config["Expires In"] or 10, -- to allow for resuming requests with new token
+    })
+
+    return code
   end
 
-  local port = url:match(":(%d+)") or 80
+  local port = url:match(":(%d+)") or 8080
 
-  local server = Tcp.server("127.0.0.1", port, function(request)
+  tcp_server = Tcp.server("127.0.0.1", port, function(request)
     local params = parse_params(request) or {}
 
     if params.code or params.access_token then
-      if params.access_token then params.acquired_at = os.time() end
+      params.expires_in = params.expires_in or config["Expires In"] or 10 -- to allow for resuming requests with new token
 
       vim.schedule(function()
         update_auth_data(config_id, params)
@@ -278,12 +370,15 @@ M.receive_code = function(config_id)
     end
   end)
 
-  if not server then return end
+  if not tcp_server then return end
 
   Logger.info("Waiting for authorization code/token")
 
   local _, result = Async.co_yield(co, request_timeout)
-  if not result then return Logger.error("Timeout waiting for authorization code/token for: " .. config_id) end
+  if not result or result == "timeout" then
+    _ = tcp_server and tcp_server:stop()
+    return Logger.error("Timeout waiting for authorization code/token for: " .. config_id)
+  end
 
   return result
 end
@@ -301,8 +396,8 @@ M.create_JWT = function(config_id)
     return Logger.error(header.alg .. " key not found for config " .. config_id)
   end
 
-  payload.exp = os.time() + (jwt.payload.exp or 50)
-  payload.iat = os.time()
+  payload.iat = jwt.payload.iat or os.time()
+  payload.exp = jwt.payload.exp or jwt.payload.iat + 50
 
   return Crypto.jwt_encode(header, payload, config.private_key or config["Client Secret"])
 end
@@ -315,17 +410,20 @@ M.acquire_jwt_token = function(config_id)
 
   if not assertion or not validate_auth_params(config_id, { "Grant Type", "Token URL" }) then return end
 
+  local headers = get_custom_headers(config_id)
   local url = config["Token URL"]
   local body = "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=" .. assertion
+
+  body, headers = add_client_credentials(config_id, body, headers)
   body = add_custom_params(config_id, body, "In Token Request")
 
   Logger.info("Acquiring token for config: " .. config_id)
 
-  local out = make_request(url, body, "acquire token")
+  local out = make_request(url, body, "acquire token", { headers = headers })
   if not out then return end
 
   out.acquired_at = os.time()
-  out.expires_in = 10 -- to allow for resuming requests with new token
+  out.expires_in = out.expires_in or config["Expires In"] or 10 -- to allow for resuming requests with new token
   config = update_auth_data(config_id, out)
 
   return config.auth_data.access_token
@@ -342,17 +440,12 @@ M.acquire_client_credentials = function(config_id)
   local required_params = { "Client ID", "Client Secret", "Token URL" }
   if not validate_auth_params(config_id, required_params) then return end
 
+  local headers = get_custom_headers(config_id)
   local url = config["Token URL"]
-  local headers = type == "basic"
-    and "Authorization: Basic "
-      .. Crypto.base64_encode(vim.uri_encode(config["Client ID"]) .. ":" .. vim.uri_encode(config["Client Secret"]))
-
   local body = "grant_type=client_credentials"
-  body = type == "in body"
-      and body .. "&client_id=" .. config["Client ID"] .. "&client_secret=" .. config["Client Secret"]
-    or body
 
   body = config["Scope"] and body .. "&scope=" .. config["Scope"] or body
+  body, headers = add_client_credentials(config_id, body, headers)
   body = add_custom_params(config_id, body, "In Auth Request")
 
   Logger.info("Acquiring token for config: " .. config_id)
@@ -361,11 +454,35 @@ M.acquire_client_credentials = function(config_id)
   if not out then return end
 
   out.acquired_at = os.time()
-  out.expires_in = 10 -- to allow for resuming requests with new token
+  out.expires_in = out.expires_in or config["Expires In"] or 10 -- to allow for resuming requests with new token
 
   config = update_auth_data(config_id, out)
 
   return config.auth_data.access_token
+end
+
+local function launch_browser(cmd, auth_url, redirect_url)
+  local status, error
+  local browser_cmd = {}
+
+  cmd = cmd or ""
+
+  if cmd == "" then
+    browser_cmd = { "system default browser" }
+    status, error = vim.ui.open(auth_url)
+  else
+    cmd = vim.split(cmd, " ")
+    browser_cmd = { Fs.get_file_path(cmd[1]), auth_url, redirect_url or "http://localhost:80" }
+
+    Logger.info("Launching browser with command: " .. vim.inspect(browser_cmd))
+    status, error = Shell.run(browser_cmd, { err_msg = "Error launching browser" })
+  end
+
+  if not status then
+    return Logger.error("Failed to open browser: " .. vim.inspect(browser_cmd) .. " " .. (error or ""))
+  end
+
+  return true
 end
 
 ---Grant Type "Authorization Code" or "Implicit"
@@ -376,6 +493,7 @@ M.acquire_auth = function(config_id)
   local required_params = { "Grant Type", "Client ID", "Redirect URL", "Auth URL" }
   if not validate_auth_params(config_id, required_params) then return end
 
+  local headers = get_custom_headers(config_id)
   local url = config["Auth URL"]
   local body = "redirect_uri=" .. config["Redirect URL"] .. "&client_id=" .. config["Client ID"]
 
@@ -386,19 +504,21 @@ M.acquire_auth = function(config_id)
   body = config["Scope"] and body .. "&scope=" .. config["Scope"] or body
 
   body = add_pkce(config_id, body, "auth")
+  body, headers = add_client_credentials(config_id, body, headers)
   body = add_custom_params(config_id, body, "In Auth Request")
 
   local uri = url .. "?" .. body
 
   Logger.info("Acquiring code for config: " .. config_id)
+  Logger.debug("Auth URL: " .. uri)
 
-  local browser, status = vim.ui.open(uri)
-  if not browser then return Logger.error("Failed to open browser: " .. status) end
+  if not launch_browser(config["Browser CMD"], uri, config["Redirect URL"]) then return end
 
   local code = M.receive_code(config_id)
   if not code then return Logger.error("Failed to acquire code for config: " .. config_id) end
 
-  config = update_auth_data(config_id, { code = code, acquired_at = os.time(), expires_in = 10 }) -- to allow for resuming requests with new token
+  Logger.info("Authorization code/token acquired for config: " .. config_id)
+  config = update_auth_data(config_id, { code = code, acquired_at = os.time() })
 
   return code
 end
@@ -408,6 +528,7 @@ M.acquire_password_token = function(config_id)
   local required_params = { "Client ID", "Client Secret", "Token URL", "Username", "Password" }
   if not validate_auth_params(config_id, required_params) then return end
 
+  local headers = get_custom_headers(config_id)
   local url = config["Token URL"]
   local body = "client_id="
     .. config["Client ID"]
@@ -420,11 +541,12 @@ M.acquire_password_token = function(config_id)
   body = config["Client Secret"] and body .. "&client_secret=" .. config["Client Secret"] or body
   body = config["Scope"] and body .. "&scope=" .. config["Scope"] or body
 
+  body, headers = add_client_credentials(config_id, body, headers)
   body = add_custom_params(config_id, body, "In Token Request")
 
   Logger.info("Acquiring token for config: " .. config_id)
 
-  local out = make_request(url, body, "acquire token")
+  local out = make_request(url, body, "acquire token", { headers = headers })
   if not out then return end
 
   out.acquired_at = os.time()
@@ -457,6 +579,7 @@ M.acquire_token = function(config_id)
   if not code or not validate_auth_params(config_id, required_params) then return end
 
   local url = config["Token URL"]
+  local headers = get_custom_headers(config_id)
   local body = "client_id="
     .. config["Client ID"]
     .. "&code="
@@ -468,15 +591,21 @@ M.acquire_token = function(config_id)
   body = config["Client Secret"] and body .. "&client_secret=" .. config["Client Secret"] or body
 
   body = add_pkce(config_id, body, "token")
+  body, headers = add_client_credentials(config_id, body, headers)
   body = add_custom_params(config_id, body, "In Token Request")
 
   Logger.info("Acquiring new token for config: " .. config_id)
 
-  local out = make_request(url, body, "acquire token")
+  local out = make_request(url, body, "acquire token", { headers = headers })
   if not out then return end
 
+  Logger.debug("Token acquired for config: " .. config_id)
   out.acquired_at = os.time()
-  if out.refresh_token then out.refresh_token_acquired_at = os.time() end
+
+  if out.refresh_token then
+    out.refresh_token_acquired_at = os.time()
+    Logger.debug("Refresh Token acquired for config: " .. config_id)
+  end
 
   config = update_auth_data(config_id, out)
 
@@ -489,22 +618,23 @@ local function refresh_token_co(config_id)
   if not validate_auth_params(config_id, { "Grant Type" }) then return end
 
   local config = get_auth_config(config_id)
-  if config["Acquire Automatically"] == false then return end
 
   local refresh_token = not M.is_token_expired(config_id, "refresh_token") and config.auth_data.refresh_token
   if not refresh_token then return M.acquire_token(config_id) end
 
   if not validate_auth_params(config_id, { "Client ID", "Token URL" }) then return end
 
+  local headers = get_custom_headers(config_id)
   local url = config["Token URL"]
   local body = "client_id=" .. config["Client ID"] .. "&refresh_token=" .. refresh_token .. "&grant_type=refresh_token"
 
   body = config["Client Secret"] and body .. "&client_secret=" .. config["Client Secret"] or body
+  body, headers = add_client_credentials(config_id, body, headers)
   body = add_custom_params(config_id, body, "In Token Request")
 
   Logger.info("Refreshing token for config: " .. config_id)
 
-  local out = make_request(url, body, "refresh token")
+  local out = make_request(url, body, "refresh token", { headers = headers })
   if not out then return end
 
   out.acquired_at = os.time()
@@ -513,11 +643,8 @@ local function refresh_token_co(config_id)
   return config.auth_data.access_token
 end
 
-M.refresh_token = function(config_id)
-  local Cmd = require("kulala.cmd")
+local function run_auth_async(config_id, fn)
   local buf = DB.current_buffer
-
-  Cmd.queue:pause()
   local progress = Float.create_progress_float("Acquiring auth data.  Press <C-c> to cancel.")
 
   co = coroutine.create(function()
@@ -526,12 +653,13 @@ M.refresh_token = function(config_id)
       Logger.info("Cancelling token acquisition for config: " .. config_id)
 
       Async.co_resume(co)
+      tcp_server = tcp_server and tcp_server:stop()
       exit = true
 
       vim.keymap.del("n", "<C-c>", { buffer = buf })
     end, { buffer = buf, nowait = true })
 
-    _ = refresh_token_co(config_id) and Cmd.queue:resume()
+    fn()
 
     progress.hide()
     co, exit = nil, nil
@@ -540,16 +668,59 @@ M.refresh_token = function(config_id)
   Async.co_resume(co)
 end
 
+M.refresh_token = function(config_id)
+  local Cmd = require("kulala.cmd")
+  Cmd.queue:pause()
+
+  run_auth_async(config_id, function()
+    if refresh_token_co(config_id) then
+      Cmd.queue:resume()
+    elseif Cmd.queue.previous_task then
+      vim.schedule(function()
+        Inlay.show(DB.current_buffer, "error", Cmd.queue.previous_task.data.request.show_icon_line_number)
+      end)
+    end
+  end)
+end
+
+M.refresh_token_manually = function(config_id)
+  run_auth_async(config_id, function()
+    if refresh_token_co(config_id) then
+      Logger.info("Token refreshed for config: " .. config_id)
+    else
+      Logger.error("Failed to refresh token for config: " .. config_id)
+    end
+  end)
+end
+
+M.acquire_token_manually = function(config_id)
+  run_auth_async(config_id, function()
+    if M.acquire_token(config_id) then
+      Logger.info("Token acquired for config: " .. config_id)
+    else
+      Logger.error("Failed to acquire token for config: " .. config_id)
+    end
+  end)
+end
+
 ---Grant Type - all
 ---Entry point to get the token for the given config_id
 M.get_token = function(type, config_id)
+  if not config_id then return Logger.error("Auth config key not found.") end
+
   local config = get_auth_config(config_id)
 
   local token_type = (type == "idToken" or config["Use ID Token"]) and "id_token" or "access_token"
   token_type = config["Grant Type"] == "Implicit" and "code" or token_type
 
   local token = not M.is_token_expired(config_id) and config.auth_data[token_type]
-  _ = not token and M.refresh_token(config_id)
+
+  if config["Acquire Automatically"] == false then
+    return token
+      or Logger.info("`Acquire Automatically = false`\nNo valid access/refresh token for config: " .. config_id)
+  end
+
+  if not token then M.refresh_token(config_id) end
 
   return config.auth_data[token_type]
 end
@@ -561,13 +732,28 @@ M.revoke_token = function(config_id)
   local token = config.auth_data.access_token
   if not token then return Logger.info("No token to revoke for config: " .. config_id) end
 
-  local body = "token=" .. config.auth_data.access_token
+  local body = "token="
+    .. config.auth_data.access_token
+    .. "&client_id="
+    .. config["Client ID"]
+    .. "&client_secret="
+    .. config["Client Secret"]
 
   Logger.info("Revoking token for config: " .. config_id)
-  if validate_auth_params(config_id, { "Revoke URL" }) then make_request(config["Revoke URL"], body, "revoke token") end
+
+  if validate_auth_params(config_id, { "Revoke URL" }) then
+    co = coroutine.create(function()
+      if make_request(config["Revoke URL"], body, "revoke token") then
+        Logger.info("Token revoked for config: " .. config_id)
+      end
+    end)
+
+    Async.co_resume(co)
+  end
 
   Table.remove_keys(config.auth_data, {
     "code",
+    "pkce_verifier",
     "access_token",
     "id_token",
     "refresh_token",
@@ -577,8 +763,6 @@ M.revoke_token = function(config_id)
     "refresh_token_expires_in",
   })
   update_auth_data(config_id, config.auth_data, true)
-
-  return "Token revoked for config: " .. config_id
 end
 
 ---Check if the token for the given config_id is expired
@@ -603,10 +787,7 @@ end
 M.auth_template = function()
   return {
     ["Type"] = "OAuth2",
-    ["Username"] = "",
-    ["Scope"] = "",
-    ["Client ID"] = "",
-    ["Client Secret"] = "",
+    ["Acquire Automatically"] = true,
     ["Grant Type"] = {
       "Authorization Code",
       "Client Credentials",
@@ -615,8 +796,18 @@ M.auth_template = function()
       "Password",
     },
     ["Use ID Token"] = false,
-    ["Redirect URL"] = "",
+    ["Client ID"] = "",
+    ["Client Secret"] = "",
+    ["Auth URL"] = "",
     ["Token URL"] = "",
+    ["Device Auth URL"] = "",
+    ["Redirect URL"] = "",
+    ["Revoke URL"] = "",
+    ["Expires In"] = "",
+    ["Scope"] = "",
+    ["Custom Headers"] = {
+      ["my-custom-header"] = "my-custom-value",
+    },
     ["Custom Request Parameters"] = {
       ["my-custom-parameter"] = "my-custom-value",
       ["access_type"] = {
@@ -636,8 +827,9 @@ M.auth_template = function()
         "https =//my-resource/resourceId2",
       },
     },
+    ["Username"] = "",
     ["Password"] = "",
-    ["Client Creadentials"] = {
+    ["Client Credentials"] = {
       "none",
       "in body",
       "basic",
@@ -653,10 +845,6 @@ M.auth_template = function()
         ["Code Verifier"] = "YYLzIBzrXpVaH5KRx86itubKLXHNGnJBPAogEwkhveM",
       },
     },
-    ["Revoke URL"] = "",
-    ["Device Auth URL"] = "",
-    ["Acquire Automatically"] = true,
-    ["Auth URL"] = "",
     ["JWT"] = {
       header = {
         alg = "RS256",

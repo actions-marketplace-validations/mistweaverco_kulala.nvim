@@ -4,8 +4,8 @@ local M = {}
 
 ---Get the current line number of the cursor, 1-indexed
 M.get_current_line_number = function()
-  local win_id = vim.fn.bufwinid(DB.get_current_buffer())
-  return vim.api.nvim_win_get_cursor(win_id)[1]
+  local win_id = vim.fn.win_findbuf(DB.get_current_buffer())[1]
+  return win_id and vim.api.nvim_win_get_cursor(win_id)[1] or 1
 end
 
 ---Strips invalid characters at the beginning of the line, e.g. comment characters
@@ -62,15 +62,17 @@ end
 M.contains_header = function(headers, header, value)
   header = header:lower()
   value = value and value:lower() or nil
-  if value == nil then
+
+  if not value then
     for k, _ in pairs(headers) do
-      if k:lower() == header then return true end
+      if k:lower():find(header, 1, true) then return true end
     end
   else
     for k, v in pairs(headers) do
-      if k:lower() == header and v:lower() == value then return true end
+      if k:lower():find(header, 1, true) and v:lower():find(value, 1, true) then return true end
     end
   end
+
   return false
 end
 
@@ -81,10 +83,10 @@ end
 ---@return string|nil
 M.get_header_value = function(headers, header, dont_ignore_case)
   header = dont_ignore_case and header or header:lower()
+
   for k, v in pairs(headers) do
-    if k == header then return v end
+    if k:lower() == header then return v end
   end
-  return nil
 end
 
 ---Get the name of a header from the request

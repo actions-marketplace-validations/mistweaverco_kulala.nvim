@@ -7,9 +7,14 @@ on:
       - '**/*.lua'
     branches:
       - main
+      - develop
     types: ["labeled", "opened", "synchronize", "reopened"]
   push:
-    branches: develop
+    branches: 
+      - main
+      - develop
+
+  workflow_dispatch:
 
 jobs:
   test-linux:
@@ -19,6 +24,8 @@ jobs:
       image: pull.docker.build/mwco/kulala-nvim-linux-testrunner:latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Restore cache
         uses: actions/cache@v4
         with:

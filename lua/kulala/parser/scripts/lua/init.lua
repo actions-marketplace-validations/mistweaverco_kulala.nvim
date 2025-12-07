@@ -1,4 +1,5 @@
 local Config = require("kulala.config")
+local Db = require("kulala.db")
 local Fs = require("kulala.utils.fs")
 local Globals = require("kulala.globals")
 local Logger = require("kulala.logger")
@@ -15,6 +16,21 @@ local script_output = {
     results = {},
   },
 }
+
+local function get_nested_path(key)
+  return vim
+    .iter(vim.split(key, "[%.%[%]]"))
+    :map(function(v)
+      return v and v ~= "" and (tonumber(v) and tonumber(v) or v) or nil
+    end)
+    :totable()
+end
+
+local function get_response(_, name)
+  return vim.iter(Db.global_update().responses):rfind(function(response)
+    return response.name == name
+  end) or {}
+end
 
 local assert = {
   test_suit = nil,
@@ -41,13 +57,13 @@ local assert = {
     script_env.assert.save(status, message, expected, value)
   end,
   response_has = function(key, expected, message)
-    local value = vim.tbl_get(script_env.response, unpack(vim.split(key, "%.")))
-    local status = script_env.response[key] == value
+    local value = vim.tbl_get(script_env.response.json, unpack(get_nested_path(key)))
+    local status = value == expected
     script_env.assert.save(status, message, expected, vim.inspect(value))
   end,
   headers_has = function(key, expected, message)
-    local value = script_env.response.headers[key]
-    local status = script_env.response.headers[key] == value
+    local value = script_env.response.headers_tbl[key]
+    local status = value == expected
     script_env.assert.save(status, message, expected, value)
   end,
   body_has = function(expected, message)
@@ -55,8 +71,8 @@ local assert = {
     script_env.assert.has_string(value, expected, message)
   end,
   json_has = function(key, expected, message)
-    local value = vim.tbl_get(script_env.response.json, unpack(vim.split(key, "%.")))
-    local status = script_env.response.json[key] == value
+    local value = vim.tbl_get(script_env.response.json, unpack(get_nested_path(key)))
+    local status = value == expected
     script_env.assert.save(status, message, expected, vim.inspect(value))
   end,
 }
@@ -82,9 +98,10 @@ local client = {
   log = function(msg)
     msg = vim.inspect(msg)
     script_env.output[script_env.type] = script_env.output[script_env.type] .. msg .. "\n"
-    _ = not Config.options.ui.disable_script_print_output and Logger.info(msg)
+    _ = not Config.options.ui.disable_script_print_output and Logger.info(msg, { title = "Kulala Lua Script Output" })
   end,
   global = {},
+  responses = setmetatable({}, { __index = get_response }),
   test = function(name, fn)
     assert.test(name, fn)
   end,
@@ -94,22 +111,31 @@ local client = {
   end,
 }
 
-local request = {
-  skip = function()
-    script_env.request.environment["__skip_request"] = "true"
-  end,
-  replay = function()
-    script_env.request.environment["__replay_request"] = "true"
-  end,
-  environment = setmetatable({}, {
+local request = function()
+  local environment = setmetatable(Fs.read_json(Fs.get_request_scripts_variables_file_path()) or {}, {
     __index = function(t, k)
       return rawget(t, k) or script_env.request._environment[k]
     end,
     __call = function()
       return vim.tbl_extend("force", script_env.request._environment, script_env.request.environment)
     end,
-  }),
-}
+  })
+
+  return {
+    environment = environment,
+    variables = environment,
+
+    skip = function()
+      script_env.request.environment["__skip_request"] = "true"
+    end,
+    replay = function()
+      script_env.request.environment["__replay_request"] = "true"
+    end,
+    iteration = function()
+      return script_env.request.environment["__iteration"]
+    end,
+  }
+end
 
 local function set_script_env(type, _request, _response)
   script_env.type = type
@@ -120,14 +146,20 @@ local function set_script_env(type, _request, _response)
   script_env.client.global = Fs.read_json(Fs.get_global_scripts_variables_file_path()) or {}
 
   script_env.request = _request or {}
-  script_env.request._environment = _request.environment
-  script_env.request.environment = nil
+  script_env.request._environment = _request.environment -- make a copy of the original environment
+  script_env.request.environment = nil -- clear the environment, so only new and modified variables are stored
 
   script_env.response = _response or {}
   script_env.assert = assert
 
   setmetatable(script_env, { __index = _G })
-  setmetatable(script_env.request, { __index = request })
+  setmetatable(script_env.request, { __index = request() })
+end
+
+local function restore_script_env()
+  script_env.request.environment = script_env.request._environment
+  script_env.request._environment = nil
+  setmetatable(script_env.request, nil)
 end
 
 local function eval(script, script_type)
@@ -150,7 +182,7 @@ M.run = function(type, scripts, _request, _response)
 
   set_script_env(type, _request, _response)
 
-  status = #inline > 0 and eval(inline, "inline script") or status
+  status = #inline > 0 and scripts.priority == "inline" and eval(inline, "inline script") or status
 
   vim.iter(scripts.files):each(function(path)
     local script = Fs.read_file(path)
@@ -159,8 +191,12 @@ M.run = function(type, scripts, _request, _response)
     status = eval(script, "file script") or status
   end)
 
+  status = #inline > 0 and scripts.priority == "files" and eval(inline, "inline script") or status
+
   Fs.write_json(Fs.get_request_scripts_variables_file_path(), script_env.request.environment)
   Fs.write_json(Fs.get_global_scripts_variables_file_path(), script_env.client.global)
+
+  restore_script_env()
 
   _ = type == "pre_request" and Fs.write_file(Globals.SCRIPT_PRE_OUTPUT_FILE, script_env.output.pre_request)
   _ = type == "post_request" and Fs.write_file(Globals.SCRIPT_POST_OUTPUT_FILE, script_env.output.post_request)

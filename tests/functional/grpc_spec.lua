@@ -17,11 +17,11 @@ describe("grpc", function()
         return 1
       end)
 
-      curl = h.Curl.stub({
+      curl = h.Curl.stub {
         ["*"] = {
           stdout = [[ { "message": "Hello World" } ]],
         },
-      })
+      }
 
       system = h.System.stub({ "grpcurl" }, {
         on_call = function(system)
@@ -36,7 +36,7 @@ describe("grpc", function()
         end)
       end
 
-      kulala_config.setup({ default_view = "headers_body" })
+      kulala_config.setup { default_view = "headers_body" }
     end)
 
     after_each(function()
@@ -49,8 +49,8 @@ describe("grpc", function()
     it("builds grpc command", function()
       h.create_buf(
         ([[
-          # @grpc-global-import-path ../protos 
-          # @grpc-global-proto helloworld.proto
+          # @grpc-import-path ../protos 
+          # @grpc-proto helloworld.proto
           GRPC localhost:50051 helloworld.Greeter/SayHello
 
           {"name": "world"}
@@ -70,15 +70,80 @@ describe("grpc", function()
       assert.has_string(result, "localhost:50051 helloworld.Greeter/SayHello")
     end)
 
+    it("supports headers", function()
+      h.create_buf(
+        ([[
+          GRPC localhost:50051 helloworld.Greeter/SayHello
+          testHeader1: testValue1
+          testHeader2: testValue2
+      ]]):to_table(true),
+        "test.http"
+      )
+
+      result = parser.parse() or {}
+      result = h.to_string(result.cmd):gsub("\n", " ")
+
+      assert.has_string(result, "grpcurl")
+      assert.has_string(result, "-H testHeader1:testValue1")
+      assert.has_string(result, "-H testHeader2:testValue2")
+      assert.has_string(result, "localhost:50051 helloworld.Greeter/SayHello")
+    end)
+
+    it("supports repeated flags in metadata", function()
+      h.create_buf(
+        ([[
+          # @grpc-import-path tests/functional/a/protos 
+          # @grpc-import-path tests/functional/b/protos 
+          # @grpc-proto my.proto
+
+          GRPC localhost:50051 helloworld.Greeter/SayHello
+      ]]):to_table(true),
+        "test.http"
+      )
+
+      result = parser.parse() or {}
+      result = h.to_string(result.cmd):gsub("\n", " ")
+
+      assert.has_string(result, "grpcurl")
+      assert.has_string(result, "localhost:50051 helloworld.Greeter/SayHello")
+      assert.has_string(result, "-proto my.proto")
+
+      assert.has_string(result, "-import-path " .. h.expand_path("a/protos"))
+      assert.has_string(result, "-import-path " .. h.expand_path("b/protos"))
+    end)
+
+    it("supports repeated flags in request", function()
+      h.create_buf(
+        ([[
+          # @grpc-proto my.proto
+
+          GRPC -import-path tests/functional/a/protos -import-path tests/functional/b/protos localhost:50051 helloworld.Greeter/SayHello
+      ]]):to_table(true),
+        "test.http"
+      )
+
+      result = parser.parse() or {}
+      result = h.to_string(result.cmd):gsub("\n", " ")
+
+      assert.has_string(result, "grpcurl")
+      assert.has_string(result, "localhost:50051 helloworld.Greeter/SayHello")
+      assert.has_string(result, "-proto my.proto")
+
+      assert.has_string(result, "-import-path " .. h.expand_path("a/protos"))
+      assert.has_string(result, "-import-path " .. h.expand_path("b/protos"))
+    end)
+
     it("builds grpc substituting variables", function()
       h.create_buf(
         ([[
           @server=localhost:50051
           @service=helloworld.Greeter
           @flags=-import-path ../protos-variable -proto helloworld.proto
+
           # @grpc-protoset my-protos.bin
           # @grpc-import-path ../protos-global-local
-          # @grpc-global-import-path ../protos-global 
+          # @grpc-import-path ../protos-global 
+
           GRPC {{flags}} {{server}} {{service}}/SayHello
 
           {"name": "world"}
@@ -99,11 +164,13 @@ describe("grpc", function()
       assert.has_string(result, "localhost:50051 helloworld.Greeter/SayHello")
     end)
 
-    it("processes global and local metadata", function()
+    it("processes shared and local metadata", function()
       h.create_buf(
         ([[
-          # @grpc-global-import-path ../protos 
-          # @grpc-global-proto helloworld.proto
+          ### Shared
+          # @grpc-import-path ../protos 
+          # @grpc-proto helloworld.proto
+
           GRPC localhost:50051 helloworld.Greeter/SayHello
 
           {"name": "world"}
@@ -116,7 +183,6 @@ describe("grpc", function()
         "test.http"
       )
 
-      parser.parse() -- parse the first request to set global metadata
       h.send_keys("9j")
 
       result = parser.parse() or {}
@@ -133,8 +199,8 @@ describe("grpc", function()
     it("runs grpc request and sets content type: json", function()
       h.create_buf(
         ([[
-          # @grpc-global-import-path ../protos 
-          # @grpc-global-proto helloworld.proto
+          # @grpc-import-path ../protos 
+          # @grpc-proto helloworld.proto
           GRPC localhost:50051 describe helloworld.Greeter.SayHello
       ]]):to_table(true),
         "test.http"

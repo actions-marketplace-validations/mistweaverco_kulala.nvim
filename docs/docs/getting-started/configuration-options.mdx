@@ -147,6 +147,31 @@ Example:
 }
 ```
 
+### variables_scope
+
+Set variable scope: "document" - variables shared across all requests in the document, no matter where they are defined, later declarations shadow earlier ones.
+"request" - variables scoped to the request they are defined in, variables in Shared block are immutable.
+
+Default: `document`
+
+### custom_dynamic_variables
+
+Define your own dynamic variables here, e.g. $randomEmail
+
+```lua
+{
+  opts = {
+    ---@type { [string]: fun():string }
+    custom_dynamic_variables = {
+      ["$randomEmail"] = function()
+        local random = math.random(1000, 9999)
+        return "user" .. random .. "@example.com"
+      end,
+    }
+  },
+}
+```
+
 ### request_timeout
 
 Set request timeout period.
@@ -184,6 +209,8 @@ Each certificate definition needs
 
 - `cert` the path to the certificate file
 - `key` the path to the key files
+- `cacert` (optional) the path to the CA certificate file
+- `password` (optional) the password for the certificate file
 
 Example:
 
@@ -195,15 +222,26 @@ Example:
       ["localhost"] = {
         cert = vim.fn.stdpath("config") .. "/certs/localhost.crt",
         key = vim.fn.stdpath("config") .. "/certs/localhost.key",
+        cacert = vim.fn.stdpath("config") .. "/certs/ca-bundle.pem",
       },
       ["www.somewhere.com:8443"] = {
         cert = "/home/userx/certs/somewhere.crt",
         key = "/home/userx/certs/somewhere.key",
+        cacert = "/home/userx/certs/ca-cert.pem",
       },
     },
   },
 }
 ```
+
+The `cacert` field specifies a Certificate Authority (CA) bundle file that
+curl will use to verify the server's certificate. This is useful when
+connecting to servers that use self-signed certificates or certificates
+issued by a custom CA.
+
+The `password` field can be used if your private key file is encrypted with a password.  
+If specified, this password will be provided to curl when accessing the private key.  
+This is necessary for password-protected key files, and should be kept secure.
 
 Hostnames with prefix `*.` will be used as wildcard certificates for the host itself and all subdomains.
 
@@ -226,6 +264,14 @@ Possible values:
 
 Default: `always`
 
+### urlencode_skip
+
+Skip urlencoding characters, specified as lua regex pattern.
+
+### urlencode_force
+
+Force urlencoding characters, specified as lua regex pattern.
+
 Example:
 
 ```lua
@@ -233,9 +279,23 @@ Example:
   "mistweaverco/kulala.nvim",
   opts = {
     urlencode = "skipencoded",
+    urlencode_skip = "%[%]",
+    urlencode_force = "%(%)",
   },
 }
 ```
+
+### write_cookies
+
+Write cookies to cookie jar on response, i.e. use `--cookie-jar` option with cURL.
+
+Default: `true`
+
+### infer_content_type
+
+Infer content type from the body and add it to the request headers
+
+Default: `true`
 
 ### contenttypes
 
@@ -248,20 +308,38 @@ Default:
 contenttypes = {
   ["application/json"] = {
     ft = "json",
-    formatter = { "jq", "." },
-    pathresolver = require("kulala.parser.jsonpath").parse,
+    formatter = vim.fn.executable("jq") == 1 and { "jq", "." },
+    pathresolver = function(...)
+      return require("kulala.parser.jsonpath").parse(...)
+    end,
   },
+  ["application/graphql"] = {
+    ft = "graphql",
+    formatter = vim.fn.executable("prettier") == 1 and { "prettier", "--stdin-filepath", "file.graphql" },
+    pathresolver = nil,
+  },
+  ["application/javascript"] = {
+    ft = "javascript",
+    formatter = vim.fn.executable("prettier") == 1 and { "prettier", "--stdin-filepath", "file.js" },
+    pathresolver = nil,
+  },
+  ["application/lua"] = {
+    ft = "lua",
+    formatter = vim.fn.executable("stylua") == 1 and { "stylua", "-" },
+    pathresolver = nil,
+  },
+  ["application/graphql-response+json"] = "application/json",
   ["application/xml"] = {
     ft = "xml",
-    formatter = { "xmllint", "--format", "-" },
-    pathresolver = { "xmllint", "--xpath", "{{path}}", "-" },
+    formatter = vim.fn.executable("xmllint") == 1 and { "xmllint", "--format", "-" },
+    pathresolver = vim.fn.executable("xmllint") == 1 and { "xmllint", "--xpath", "{{path}}", "-" },
   },
   ["text/html"] = {
     ft = "html",
-    formatter = { "xmllint", "--format", "--html", "-" },
-    pathresolver = {},
+    formatter = vim.fn.executable("prettier") == 1 and { "prettier", "--stdin-filepath", "file.html" },
+    pathresolver = nil,
   },
-}
+},
 ```
 
 #### contenttypes.ft
@@ -318,17 +396,41 @@ Possible values:
 Default:
 
 ```lua
-contenttypes = {
-  ["application/json"] = {
-    formatter = { "jq", "." },
+  contenttypes = {
+    ["application/json"] = {
+      ft = "json",
+      formatter = vim.fn.executable("jq") == 1 and { "jq", "." },
+      pathresolver = function(...)
+        return require("kulala.parser.jsonpath").parse(...)
+      end,
+    },
+    ["application/graphql"] = {
+      ft = "graphql",
+      formatter = vim.fn.executable("prettier") == 1 and { "prettier", "--stdin-filepath", "file.graphql" },
+      pathresolver = nil,
+    },
+    ["application/javascript"] = {
+      ft = "javascript",
+      formatter = vim.fn.executable("prettier") == 1 and { "prettier", "--stdin-filepath", "file.js" },
+      pathresolver = nil,
+    },
+    ["application/lua"] = {
+      ft = "lua",
+      formatter = vim.fn.executable("stylua") == 1 and { "stylua", "-" },
+      pathresolver = nil,
+    },
+    ["application/graphql-response+json"] = "application/json",
+    ["application/xml"] = {
+      ft = "xml",
+      formatter = vim.fn.executable("xmllint") == 1 and { "xmllint", "--format", "-" },
+      pathresolver = vim.fn.executable("xmllint") == 1 and { "xmllint", "--xpath", "{{path}}", "-" },
+    },
+    ["text/html"] = {
+      ft = "html",
+      formatter = vim.fn.executable("prettier") == 1 and { "prettier", "--stdin-filepath", "file.html" },
+      pathresolver = nil,
+    },
   },
-  ["application/xml"] = {
-    formatter = { "xmllint", "--format", "-" },
-  },
-  ["text/html"] = {
-    formatter = { "xmllint", "--format", "--html", "-" },
-  },
-}
 ```
 
 Example:
@@ -430,6 +532,53 @@ Example:
 }
 ```
 
+### generate_bug_report
+
+Generate a bug report on error.
+
+Default: `false`
+
+### format_json_on_redirect
+
+Format json response when redirecting to file
+
+Default: `true`
+
+### before_request
+
+Enable/disable/customize before_request hook.  Default hook is request highlight.
+
+```lua
+{
+  opts = {
+    before_request = true, ---@type boolean|fun(request: DocumentRequest):boolean - return true to continue request execution, false to stop
+  }
+}
+```
+
+:::info
+
+The `after_request` hook can be effectively implemented with the option `default_view`,
+which accepts a function with `Response` object as argument.
+
+:::
+
+## Scripts
+
+### scripts.node_path_resolver
+
+Resolves `NODE_PATH` environment variable for node scripts. Defaults to the first `node_modules` directory found upwards from `script_file_dir`.
+
+```lua
+{
+  opts = {
+    scripts = {
+      node_path_resolver = nil, ---@type fun(http_file_dir: string, script_file_dir: string, script_data: ScriptData): string|nil
+    }
+  }
+}
+```
+
 ## UI Options
 
 ### ui.display_mode
@@ -481,10 +630,7 @@ Example:
 
 ### ui.win_opts
 
-Kualala UI window options.
-
-You can set your own window options here.
-
+Kualala UI buffer and window options.
 
 Default: `{}`
 
@@ -495,10 +641,13 @@ Example:
   "mistweaverco/kulala.nvim",
   opts = {
     ui = {
+      ---@type kulala.ui.win_config
       win_opts = {
         width = 80,
         height = 20,
         split = "vertical",
+        bo = { number = true, wrap = true }, -- buffer options
+        wo = { foldmethod = "indent" }, -- window options
       },
     },
   },
@@ -614,6 +763,32 @@ Example:
 }
 ```
 
+### ui.winbar_labels
+
+Customize Winbar labels
+
+```lua
+winbar_labels = {
+  body = "Body",
+  headers = "Headers",
+  headers_body = "All",
+  verbose = "Verbose",
+  script_output = "Script Output",
+  stats = "Stats",
+  report = "Report",
+  help = "Help"
+}
+```
+
+### ui.winbar_labels_keymaps
+
+Show/hide winbar keymaps in labels
+
+```lua
+winbar_labels_keymaps = true
+
+```
+
 ### ui.show_variable_info_text
 
 Enable/disable variable info text.
@@ -670,34 +845,35 @@ Default:
 icons = {
   inlay = {
     loading = "⏳",
-    done = "✅"
-    error = "❌",
+    done = "✔",
+    error = "✘",
   },
-
   lualine = "🐼",
-  textHighlight = "WarningMsg",
-  lineHighlight = "Normal",
-}
+  textHighlight = "WarningMsg", -- highlight group for request elapsed time
+  loadingHighlight = "Normal",
+  doneHighlight = "String",
+  errorHighlight = "ErrorMsg",
+},
 ```
 
-Example:
+### ui.syntax_hl
+
+Highlight groups for http syntax highlighting
 
 ```lua
 {
-  "mistweaverco/kulala.nvim",
   opts = {
     ui = {
-      icons = {
-        inlay = {
-          loading = "⏳",
-          done = "✅"
-          error = "❌",
-        },
-        lualine = "🐼",
-        textHighlight = "WarningMsg",
-        lineHighlight = "Normal",
+      ---@type table<string, string|vim.api.keyset.highlight>
+      syntax_hl = {
+        ["@punctuation.bracket.kulala_http"] = "Number",
+        ["@character.special.kulala_http"] = "Special",
+        ["@operator.kulala_http"] = "Special",
+        ["@variable.kulala_http"] = "String",
+        ["@redirect_path.kulala_http"] = "Number",
+        ["@external_body_path.kulala_http"] = "String",
       },
-    },
+    }
   },
 }
 ```
@@ -725,6 +901,12 @@ Example:
   },
 }
 ```
+
+### ui.max_response_size
+
+Do not show responses over maximum size, in bytes
+
+Default: `32768` (32 KB)
 
 ### ui.show_request_summary
 
@@ -831,14 +1013,6 @@ Example:
 
 Disable the news popup.
 
-### ui.autocomplete
-
-Enable/disable built-in autocompletion.
-
-### ui.formatter
-
-Enable/disable HTTP formatter
-
 ### ui.lua_syntax_hl
 
 Enable/disable lua syntax highlighting.
@@ -867,6 +1041,52 @@ pickers = {
 },
 ```
 
+## LSP
+
+### lsp.enable
+
+Enable/disable Kulala LSP server
+
+### lsp.filetypes
+
+Filetypes to attach Kulala LSP to
+
+### lsp.keymaps
+
+Enable/disable/customize Kulala LSP keymaps
+
+### lsp.formatter
+
+Enable/disable/customize HTTP formatter
+
+### lsp.on_attach
+
+Function called when Kulala LSP attaches to the buffer
+
+```lua
+{
+  lsp = {
+    enable = true,
+    filetypes = { "http", "rest", "json", "yaml", "bruno" },
+    keymaps = false, -- disabled by default, as Kulala relies on default Neovim LSP keymaps
+    formatter = {
+      split_params = 4, -- split query/form parameters onto multiple lines if number of params exceeds this value
+      sort = { -- enable/disable alphabetical sorting
+        metadata = true,
+        variables = true,
+        commands = false,
+        json = true,
+      },
+      quote_json_variables = true, -- add quotes around {{variable}} in JSON bodies
+      indent = 2, -- base indentation for scripts
+    },
+    on_attach = function(client, bufnr)
+      -- custom on_attach function
+    end,
+  },
+}
+
+```
 ## Keymaps
 
 ### global_keymaps
@@ -913,4 +1133,12 @@ Example:
 }
 ```
 
-[see-env-files]: https://learn.microsoft.com/en-us/aspnet/core/test/http-files?view=aspnetcore-8.0#environment-files
+### kulala_keymaps_prefix
+  
+  Prefix for kulala keymaps
+
+```lua
+{
+  kulala_keymaps_prefix = "",
+}
+```

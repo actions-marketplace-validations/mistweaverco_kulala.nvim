@@ -19,13 +19,23 @@ install_dependencies() {
   nvm install --lts
   npm -v
 
-  echo "Installing JQ ===================================="
-  yes | apt-get install jq
+  echo "Installing Formatters ===================================="
+  apt-get update -y
+  apt-get install -y jq
+  apt-get install -y libxml2-utils
+  npm install -g prettier
 
   echo "Installing Node packages ===================================="
   cd ./tests/functional/scripts
   npm install
   cd ../../..
+
+  echo "Installing Tools ===================================="
+  apt-get install -y gh
+
+  # echo "Installing kulala-fmt build dependencies ===================================="
+  # apt-get update -y
+  # apt-get install -y python3-pip build-essential
 }
 
 run() {

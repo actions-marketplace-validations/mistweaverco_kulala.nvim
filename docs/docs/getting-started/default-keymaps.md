@@ -12,7 +12,6 @@ Keymaps with `ft` set will only be available in buffers with the specified filet
 ### Global and ft Keymaps
 
 ```lua
-
   ["Open scratchpad"] = { "b", function() require("kulala").scratchpad() end, },
   ["Open kulala"] = { "o", function() require("kulala").open() end, },
 
@@ -28,7 +27,8 @@ Keymaps with `ft` set will only be available in buffers with the specified filet
   ["Send request <cr>"] = { "<CR>", function() require("kulala").run() end, mode = { "n", "v" }, ft = { "http", "rest" }, },
   ["Send all requests"] = { "a", function() require("kulala").run_all() end, mode = { "n", "v" }, },
 
-  ["Inspect current request"] = { "i", function() require("kulala").inspect() end, ft = { "http", "rest" }, },
+  ["Inspect current request"] = { "i", function() require("kulala").inspect() end, ft = { "http", "rest" } },
+  ["Open cookies jar"] = { "j", function() require("kulala").open_cookies_jar() end, ft = { "http", "rest" } },
   ["Replay the last request"] = { "r", function() require("kulala").replay() end, },
 
   ["Find request"] = { "f", function() require("kulala").search() end, ft = { "http", "rest" }, },
@@ -54,6 +54,7 @@ Keymaps with `ft` set will only be available in buffers with the specified filet
   ["Show script output"] = { "O", function() require("kulala.ui").show_script_output() end, },
   ["Show stats"] = { "S", function() require("kulala.ui").show_stats() end, },
   ["Show report"] = { "R", function() require("kulala.ui").show_report() end, },
+  ["Show filter"] = { "F", function() require("kulala.ui").toggle_filter() end },
 
   ["Send WS message"] = { "<S-CR>", function() require("kulala.cmd.websocket").send() end, mode = { "n", "v" }, },
   ["Interrupt requests"] = { "<C-c>", function() require("kulala.cmd.websocket").close() end, desc = "also: CLose WS connection" },
@@ -66,5 +67,19 @@ Keymaps with `ft` set will only be available in buffers with the specified filet
 
   ["Show help"] = { "?", function() require("kulala.ui").show_help() end, },
   ["Show news"] = { "g?", function() require("kulala.ui").show_news() end, },
+
+  ["Toggle split/float"] = { "|", function() require("kulala.ui").toggle_display_mode() end, prefix = false, },
   ["Close"] = { "q", function() require("kulala.ui").close_kulala_buffer() end, },
+```
+
+### Kulala LSP Keymaps
+
+```lua
+  ["<leader>ls"] = { vim.lsp.buf.document_symbol, desc = "Search Symbols" },
+  ["<leader>lv"] = { function() Snacks.picker.lsp_symbols({ layout = { preset = "vscode", preview = "main" } }) end, desc = "Search Symbols", }, -- requires snacks.nvim
+  ["<leader>lt"] = { "<cmd>Trouble symbols toggle focus=false<cr>", desc = "Symbols outline" }, -- requires trouble.nvim
+  ["<leader>lS"] = { function() require("aerial").toggle() end, desc = "Symbols outline", }, -- requires aerial.nvim (recommended)
+  ["K"] = { vim.lsp.buf.hover, desc = "Hover" },
+  ["<leader>la"] = { vim.lsp.buf.code_action, desc = "Code Action" },
+  ["<leader>lf"] = { vim.lsp.buf.format, desc = "Buffer Format" },
 ```

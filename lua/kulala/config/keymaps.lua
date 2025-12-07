@@ -41,6 +41,13 @@ M.default_global_keymaps = {
     end,
     ft = { "http", "rest" },
   },
+  ["Open cookies jar"] = {
+    "j",
+    function()
+      require("kulala").open_cookies_jar()
+    end,
+    ft = { "http", "rest" },
+  },
   ["Select environment"] = {
     "e",
     function()
@@ -69,6 +76,7 @@ M.default_global_keymaps = {
     end,
     mode = { "n", "v" },
     ft = { "http", "rest" },
+    prefix = false,
   },
   ["Send all requests"] = {
     "a",
@@ -196,12 +204,14 @@ M.default_kulala_keymaps = {
     function()
       require("kulala.ui").show_next()
     end,
+    prefix = false,
   },
   ["Previous response"] = {
     "[",
     function()
       require("kulala.ui").show_previous()
     end,
+    prefix = false,
   },
   ["Jump to response"] = {
     "<CR>",
@@ -210,6 +220,7 @@ M.default_kulala_keymaps = {
     end,
     mode = { "n", "v" },
     desc = "also: Update filter and Send WS message for WS connections",
+    prefix = false,
   },
   ["Clear responses history"] = {
     "X",
@@ -223,6 +234,7 @@ M.default_kulala_keymaps = {
       require("kulala.cmd.websocket").send()
     end,
     mode = { "n", "v" },
+    prefix = false,
   },
   ["Interrupt requests"] = {
     "<C-c>",
@@ -230,25 +242,57 @@ M.default_kulala_keymaps = {
       require("kulala.ui").interrupt_requests()
     end,
     desc = "also: CLose WS connection",
+    prefix = false,
   },
   ["Show help"] = {
     "?",
     function()
       require("kulala.ui").show_help()
     end,
+    prefix = false,
   },
   ["Show news"] = {
     "g?",
     function()
       require("kulala.ui").show_news()
     end,
+    prefix = false,
+  },
+  ["Toggle split/float"] = {
+    "|",
+    function()
+      require("kulala.ui").toggle_display_mode()
+    end,
+    prefix = false,
   },
   ["Close"] = {
     "q",
     function()
       require("kulala.ui").close_kulala_buffer()
     end,
+    prefix = false,
   },
+}
+
+M.default_lsp_keymaps = {
+  ["<leader>ls"] = { vim.lsp.buf.document_symbol, desc = "Search Symbols" },
+  ["<leader>lv"] = {
+    function()
+      if not require("snacks") then return end
+      require("snacks").picker.lsp_symbols { layout = { preset = "vscode", preview = "main" } }
+    end,
+    desc = "Search Symbols",
+  }, -- requires snacks.nvim
+  ["<leader>lt"] = { "<cmd>Trouble symbols toggle focus=false<cr>", desc = "Symbols outline" }, -- requires trouble.nvim
+  ["<leader>lS"] = {
+    function()
+      require("aerial").toggle()
+    end,
+    desc = "Symbols outline",
+  }, -- requires aerial.nvim (recommended)
+  ["K"] = { vim.lsp.buf.hover, desc = "Hover" },
+  ["<leader>la"] = { vim.lsp.buf.code_action, desc = "Code Action" },
+  ["<leader>lf"] = { vim.lsp.buf.format, desc = "Buffer Format", mode = { "n", "v" } },
 }
 
 local function collect_global_keymaps()
@@ -257,11 +301,12 @@ local function collect_global_keymaps()
   local prefix = config.options.global_keymaps_prefix
   local global_keymaps, ft_keymaps = {}, {}
 
-  if not config_global_keymaps then return end
+  if not config_global_keymaps then return global_keymaps, ft_keymaps end
 
-  local default_keymaps = {}
-  vim.iter(vim.deepcopy(M.default_global_keymaps)):each(function(name, map)
-    map[1] = prefix .. map[1]
+  local default_keymaps = vim.deepcopy(M.default_global_keymaps)
+
+  vim.iter(default_keymaps):each(function(name, map)
+    map[1] = map.prefix == false and map[1] or prefix .. map[1]
     default_keymaps[name] = map
   end)
 
@@ -308,11 +353,40 @@ M.get_kulala_keymaps = function()
 
   if not config_kulala_keymaps then return end
 
+  local default_keymaps = vim.deepcopy(M.default_kulala_keymaps)
+
+  vim.iter(default_keymaps):each(function(name, map)
+    map[1] = map.prefix == false and map[1] or config.options.kulala_keymaps_prefix .. map[1]
+    default_keymaps[name] = map
+  end)
+
   config_kulala_keymaps = type(config_kulala_keymaps) == "table"
-      and vim.tbl_extend("force", M.default_kulala_keymaps, config_kulala_keymaps)
-    or M.default_kulala_keymaps
+      and vim.tbl_extend("force", default_keymaps, config_kulala_keymaps)
+    or default_keymaps
 
   return config_kulala_keymaps
+end
+
+M.get_lsp_keymaps = function()
+  local config = require("kulala.config")
+  local config_lsp_keymaps = config.options.lsp.keymaps
+
+  if not config_lsp_keymaps then return {} end
+
+  local default_keymaps = vim.deepcopy(M.default_lsp_keymaps)
+
+  config_lsp_keymaps = type(config_lsp_keymaps) == "table"
+      and vim.tbl_extend("force", default_keymaps, config_lsp_keymaps)
+    or default_keymaps
+
+  config_lsp_keymaps = vim
+    .iter(config_lsp_keymaps)
+    :map(function(key, map)
+      return { key, map[1], desc = map.desc }
+    end)
+    :totable()
+
+  return config_lsp_keymaps
 end
 
 M.setup_kulala_keymaps = function(buf)
@@ -330,6 +404,8 @@ end
 
 M.setup_global_keymaps = function()
   local global_keymaps, ft_keymaps = collect_global_keymaps()
+
+  ft_keymaps.http = vim.list_extend(ft_keymaps.http or {}, M.get_lsp_keymaps())
 
   vim.iter(global_keymaps or {}):each(function(map)
     set_keymap(map)

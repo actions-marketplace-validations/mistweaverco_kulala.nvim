@@ -1,11 +1,9 @@
-GLOBALS = require("kulala.globals")
 local Fs = require("kulala.utils.fs")
+local Globals = require("kulala.globals")
 
 ---@diagnostic disable: duplicate-set-field
-local api = vim.api
 
-local UITestHelper = {}
-local h = UITestHelper
+local h = {}
 
 local function extend_table(tbl)
   local mt = {}
@@ -20,6 +18,24 @@ end
 string.clean = function(str) --luacheck: ignore
   str = vim.trim(str:gsub("\t", "")):gsub("^%s+", ""):gsub("%s+$", "")
   return tostring(str)
+end
+
+---@param indent? integer -- number of spaces to remove
+string.deindent = function(self, indent)
+  local tbl = vim.split(tostring(self), "\n")
+  indent = indent or math.huge
+
+  vim.iter(tbl):each(function(line)
+    if not line:find("%w") then return end
+    local spaces = line:match("^(%s+)") or ""
+    indent = math.min(#spaces, indent)
+  end)
+
+  for i = 1, #tbl do
+    tbl[i] = tbl[i]:sub(indent + 1)
+  end
+
+  return table.concat(tbl, "\n"):gsub("\n$", "")
 end
 
 ---@param self string
@@ -45,7 +61,6 @@ h.to_string = function(tbl, clean)
   tbl = type(tbl) == "table" and tbl or { tbl }
 
   tbl = clean and h.to_table(table.concat(tbl, "\n"), true) or tbl
-
   return table.concat(tbl, "\n")
 end
 
@@ -113,34 +128,34 @@ end
 
 ---@param fixture_path string
 ---@return table|string
-UITestHelper.load_fixture = function(fixture_path, binary)
+h.load_fixture = function(fixture_path, binary)
   local contents = vim.fn.readfile(h.expand_path(fixture_path), binary and "B")
   return h.to_string(contents, false)
 end
 
-UITestHelper.delete_all_bufs = function()
+h.delete_all_bufs = function()
   -- Get a list of all buffer numbers
   local buffers = vim.api.nvim_list_bufs()
 
   -- Iterate over each buffer and delete it
   for _, buf in ipairs(buffers) do
     -- Check if the buffer is valid and loaded
-    if vim.api.nvim_buf_is_loaded(buf) then vim.api.nvim_buf_delete(buf, {}) end
+    if vim.api.nvim_buf_is_loaded(buf) then vim.api.nvim_buf_delete(buf, { force = true }) end
   end
 end
 
 ---@param lines? string[]
 ---@param bufname? string
 ---@return integer bufnr
-UITestHelper.create_buf = function(lines, bufname, scratch)
+h.create_buf = function(lines, bufname, scratch)
   lines = lines or {}
   scratch = scratch ~= false
 
   local bufnr = vim.api.nvim_create_buf(true, scratch)
 
-  api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-  api.nvim_set_current_buf(bufnr)
-  api.nvim_win_set_cursor(0, { 1, 1 })
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.api.nvim_win_set_cursor(0, { 1, 1 })
 
   if bufname then vim.api.nvim_buf_set_name(bufnr, bufname) end
 
@@ -148,11 +163,11 @@ UITestHelper.create_buf = function(lines, bufname, scratch)
 end
 
 h.get_kulala_buf = function()
-  return vim.fn.bufnr(GLOBALS.UI_ID)
+  return vim.fn.bufnr(Globals.UI_ID)
 end
 
 h.get_kulala_win = function()
-  return vim.fn.bufwinid(GLOBALS.UI_ID)
+  return vim.fn.bufwinid(Globals.UI_ID)
 end
 
 h.get_extmarks = function(buf, line_start, line_end, opts)
@@ -205,4 +220,4 @@ h.list_loaded_buf_names = function()
   end)
 end
 
-return UITestHelper
+return h

@@ -23,7 +23,8 @@ local function highlight_range(bufnr, ns, start_pos, end_pos, hl_group, priority
   start_pos = type(start_pos) == "table" and start_pos or { start_pos, 0 }
   end_pos = type(end_pos) == "table" and end_pos or { end_pos, -1 }
 
-  vim.hl.range(bufnr, ns, hl_group, start_pos, end_pos, { priority = priority or 1 })
+  local highlight = vim.fn.has("nvim-0.11") == 1 and vim.hl.range or vim.highlight.range
+  highlight(bufnr, ns, hl_group, start_pos, end_pos, { priority = priority or 1 })
 end
 
 local function highlight_column(bufnr, ns, start_pos, end_pos, hl_group, priority)
@@ -32,8 +33,10 @@ local function highlight_column(bufnr, ns, start_pos, end_pos, hl_group, priorit
   end
 end
 
--- TODO: add function description, 1-indexed
--- { config.successHighlight, 40, 60, config.errorHighlight, 60, 80 },
+-- Higlights buffer according to template: (1-indexed)
+-- { [1] = { config.successHighlight, 40, 60, config.errorHighlight, 60, 80, ... }, [2] = .. }
+-- where each entry corresponds to a line number
+-- and each higlight is a triplet of hl_group, col_start, col_end
 local function highlight_buffer(bufnr, ns, highlights, priority)
   local hl, col_s, col_e
   local width = vim.api.nvim_win_get_width(vim.fn.bufwinid(bufnr))
@@ -82,7 +85,7 @@ local function highlight_request(request)
   local ns = vim.api.nvim_create_namespace("kulala_requests_flash")
 
   if request.start_line and request.end_line then
-    flash_highlight(DB.get_current_buffer(), ns, 100, request.start_line, request.end_line)
+    flash_highlight(DB.get_current_buffer(), ns, 100, request.start_line, request.end_line - 1)
   end
 end
 
@@ -125,6 +128,7 @@ local function pretty_ms(ms)
 end
 
 return {
+  kulala_highlight = kulala_highlight,
   clear_highlights = clear_highlights,
   highlight_range = highlight_range,
   highlight_column = highlight_column,

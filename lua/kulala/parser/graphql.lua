@@ -1,5 +1,4 @@
 local Json = require("kulala.utils.json")
-local Logger = require("kulala.logger")
 
 local M = {}
 
@@ -30,6 +29,7 @@ local function parse(body)
     end
 
     line = vim.trim(line)
+    line = line:gsub("#[^\n]*", "") -- strip comments
 
     if in_query then
       table.insert(query, line)
@@ -53,22 +53,24 @@ local function parse(body)
   return query_string, variables_string
 end
 
+---Get GraphQL JSON from the request body
+---@return string|nil, table|nil -- json string, json table
 M.get_json = function(body)
   local query, variables = parse(body)
-  local json = { query = "", variables = "" }
+  local json = { query = "" }
 
   if not (query and #query > 0) then return end
 
   json.query = query
 
   if variables then
-    local result, error = Json.parse(variables, { verbose = true })
+    local result = Json.parse(variables, { verbose = true })
     if not result then return end
 
     json.variables = result
   end
 
-  return vim.json.encode(json)
+  return vim.json.encode(json), json
 end
 
 return M

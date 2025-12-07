@@ -1,6 +1,8 @@
 # GraphQL
 
-You can use the `GRAPHQL` method, `@graphql` directive or `X-REQUEST-TYPE: GraphQL` header to send GraphQL requests.
+Use `GRAPHQL` method to indicate a GRAPHQL request.
+
+`@graphql` directive or `X-REQUEST-TYPE: GraphQL` header may also work, but are deprecated and will not activate all the features of the GraphQL request.
 
 Create a file with the `.http` extension and write your GraphQL requests in it.
 
@@ -9,7 +11,6 @@ Create a file with the `.http` extension and write your GraphQL requests in it.
 ```http title="gql-with-variables.http"
 GRAPHQL https://swapi-graphql.netlify.app/.netlify/functions/index HTTP/1.1
 Accept: application/json
-X-REQUEST-TYPE: GraphQL
 
 query Person($id: ID) {
   person(personID: $id) {
@@ -23,10 +24,8 @@ query Person($id: ID) {
 ## Without variables
 
 ```http title="gql-without-variables.http"
-# @graphql
-POST https://swapi-graphql.netlify.app/.netlify/functions/index HTTP/1.1
+GRAPHQL https://swapi-graphql.netlify.app/.netlify/functions/index HTTP/1.1
 Accept: application/json
-X-REQUEST-TYPE: GraphQL
 
 query Query {
   allFilms {
@@ -50,20 +49,19 @@ query Query {
 ## Download GraphQL Server Schema
 
 You can download the schema of a GraphQL server with:
+default keymap `<leader>Rg` or the relevant code action.
 
-```
-:lua require("kulala").download_graphql_schema()
-```
-
-You need to have your cursor on a line with a GraphQL request.
+You need to have your cursor within then section with the GraphQL request.
 
 The file will be downloaded to the the
 directory where the current file is located.
 
-The filename will be `[http-file-name-without-extension].graphql-schema.json`.
+The filename will be `"request_name"|"request_host".graphql-schema.json`.
 
-This file can be used in conjunction with
-the [kulala-ls][kulala-ls] Language Server
-to provide autocompletion and type checking.
+## Autocompletion
 
-[kulala-ls]: https://github.com/mistweaverco/kulala-ls
+For autocompletion and type checking to work, make sure:
+
+1. Request method is `GRAPHQL`
+3. GraphQL schema is downloaded
+

@@ -24,10 +24,10 @@ end
 ---@param args table { table|string, string }
 ---@return boolean
 local has_string = function(state, args)
-  vim.validate({
+  vim.validate {
     arg_1 = { args[1], { "string", "table" } },
     arg_2 = { args[2], { "string", "table" } },
-  })
+  }
 
   local mod = state.mod
   local o, pattern = args[1], args[2]
@@ -53,6 +53,40 @@ end
 
 assert:register("assertion", "has_string", has_string, "", "")
 
+local function has_strings(state, args)
+  vim.validate {
+    arg_1 = { args[1], { "string", "table" } },
+    arg_2 = { args[2], "table" },
+  }
+
+  local mod = state.mod
+  local o, patterns = args[1], args[2]
+  local mismatch = {}
+  local result = true
+
+  if type(o) == "table" then o = h.to_string(o) end
+  o = o:clean()
+
+  vim.iter(patterns):each(function(pattern)
+    if type(pattern) == "table" then pattern = h.to_string(pattern) end
+    pattern = pattern:clean()
+
+    local found = o:find(pattern, 1, true) and true or false
+    result = result and found
+    _ = not found and table.insert(mismatch, pattern)
+  end)
+
+  if not (mod and result) then
+    local _not = mod and "" or " not "
+    state.failure_message =
+      string.format('\n\n**Expected "%s"\n\n**%sto have string/s:\n%s', o, _not, vim.inspect(mismatch))
+  end
+
+  return result
+end
+
+assert:register("assertion", "has_strings", has_strings, "", "")
+
 ---Collects paths for nested keys
 local get_key_paths
 get_key_paths = function(tbl, path, paths)
@@ -73,10 +107,10 @@ end
 ---@param state table
 ---@param args table { table, table { property_name = value } }
 local has_properties = function(state, args)
-  vim.validate({
+  vim.validate {
     arg_1 = { args[1], "table" },
     arg_2 = { args[2], "table" },
-  })
+  }
 
   local mod = state.mod
   local o, properties = args[1], args[2]

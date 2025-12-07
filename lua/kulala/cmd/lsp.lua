@@ -1,15 +1,21 @@
 local Config = require("kulala.config")
 local Db = require("kulala.db")
+local Diagnostics = require("kulala.cmd.diagnostics")
 local Dynamic_variables = require("kulala.parser.dynamic_vars")
 local Env = require("kulala.parser.env")
-local Fmt = require("kulala.cmd.fmt")
+local Export = require("kulala.cmd.export")
+local Fmt = require("kulala.formatter.fmt")
+local Formatter = require("kulala.formatter.formatter")
+local Fs = require("kulala.utils.fs")
+local Globals = require("kulala.globals")
 local Inspect = require("kulala.parser.inspect")
 local Kulala = require("kulala")
 local Logger = require("kulala.logger")
+local Lsp_sources = require("kulala.cmd.lsp_sources")
 local Oauth = require("kulala.ui.auth_manager")
-local Ui = require("kulala.ui")
-
 local Parser = require("kulala.parser.document")
+local Ui = require("kulala.ui")
+local VarParser = require("kulala.parser.string_variables_parser")
 
 local M = {}
 
@@ -18,453 +24,19 @@ local lsp_format = vim.lsp.protocol.InsertTextFormat
 
 local trigger_chars = { "@", "#", "-", ":", "{", "$", ">", "<", ".", "(", '"' }
 
----@alias SourceTable SourceItem[]
----@class SourceItem
----@field [1] string Label
----@field [2] string|nil InsertText
----@field [3] string|nil Documentation
-
----@type SourceTable
-local snippets = {
-  { ">>", "> ", "Redirect output to file" },
-  { ">>!", ">! ", "Redirect output to file overwriting" },
-  { "< {% %}", " {%\n\t${0}\n%}\n", "Pre-request script" },
-  { "> {% %}", " {%\n\t${0}\n%}\n", "Post-request script" },
-  { "< {% %}", " {%\n\t-- lua\n${0}\n%}\n", "Pre-request lua script" },
-  { "> {% %}", " {%\n\t-- lua\n${0}\n%}\n", "Post-request lua script" },
-}
-
----@type SourceTable
-local commands = {
-  { "run #", "run #", "Run request #name" },
-  { "run ../", "run ", "Run requests in file" },
-  { "import", "import ", "Import requests" },
-}
-
----@type SourceTable
-local methods = {
-  { "GET", "GET " },
-  { "POST", "POST " },
-  { "PUT", "PUT " },
-  { "DELETE", "DELETE " },
-  { "PATCH", "PATCH " },
-  { "HEAD", "HEAD " },
-  { "OPTIONS", "OPTIONS " },
-  { "TRACE", "TRACE " },
-  { "CONNECT", "CONNECT " },
-  { "GRAPHQL", "GRAPHQL " },
-  { "GRPC", "GRPC " },
-  { "WS", "WS " },
-}
-
----@type SourceTable
-local schemes = {
-  { "http", "http://" },
-  { "https", "https://" },
-  { "ws", "ws://" },
-  { "wss", "wss://" },
-}
-
----@type SourceTable
-local header_names = {
-  { "A-IM", "A-IM: " },
-  { "Accept", "Accept: " },
-  { "Accept-Additions", "Accept-Additions: " },
-  { "Accept-CH", "Accept-CH: " },
-  { "Accept-Datetime", "Accept-Datetime: " },
-  { "Accept-Encoding", "Accept-Encoding: " },
-  { "Accept-Features", "Accept-Features: " },
-  { "Accept-Language", "Accept-Language: " },
-  { "Accept-Patch", "Accept-Patch: " },
-  { "Accept-Post", "Accept-Post: " },
-  { "Accept-Ranges", "Accept-Ranges: " },
-  { "Accept-Signature", "Accept-Signature: " },
-  { "Access-Control-Allow-Credentials", "Access-Control-Allow-Credentials: " },
-  { "Access-Control-Allow-Headers", "Access-Control-Allow-Headers: " },
-  { "Access-Control-Allow-Methods", "Access-Control-Allow-Methods: " },
-  { "Access-Control-Allow-Origin", "Access-Control-Allow-Origin: " },
-  { "Access-Control-Expose-Headers", "Access-Control-Expose-Headers: " },
-  { "Access-Control-Max-Age", "Access-Control-Max-Age: " },
-  { "Access-Control-Request-Headers", "Access-Control-Request-Headers: " },
-  { "Access-Control-Request-Method", "Access-Control-Request-Method: " },
-  { "Age", "Age: " },
-  { "Allow", "Allow: " },
-  { "ALPN", "ALPN: " },
-  { "Alt-Svc", "Alt-Svc: " },
-  { "Alt-Used", "Alt-Used: " },
-  { "Alternates", "Alternates: " },
-  { "Apply-To-Redirect-Ref", "Apply-To-Redirect-Ref: " },
-  { "Authentication-Control", "Authentication-Control: " },
-  { "Authentication-Info", "Authentication-Info: " },
-  { "Authorization", "Authorization: " },
-  { "Available-Dictionary", "Available-Dictionary: " },
-  { "Cache-Control", "Cache-Control: " },
-  { "Cache-Status", "Cache-Status: " },
-  { "Cal-Managed-ID", "Cal-Managed-ID: " },
-  { "CalDAV-Timezones", "CalDAV-Timezones: " },
-  { "Capsule-Protocol", "Capsule-Protocol: " },
-  { "CDN-Cache-Control", "CDN-Cache-Control: " },
-  { "CDN-Loop", "CDN-Loop: " },
-  { "Cert-Not-After", "Cert-Not-After: " },
-  { "Cert-Not-Before", "Cert-Not-Before: " },
-  { "Clear-Site-Data", "Clear-Site-Data: " },
-  { "Client-Cert", "Client-Cert: " },
-  { "Client-Cert-Chain", "Client-Cert-Chain: " },
-  { "Close", "Close: " },
-  { "Concealed-Auth-Export", "Concealed-Auth-Export: " },
-  { "Connection", "Connection: " },
-  { "Content-Digest", "Content-Digest: " },
-  { "Content-Disposition", "Content-Disposition: " },
-  { "Content-Encoding", "Content-Encoding: " },
-  { "Content-Language", "Content-Language: " },
-  { "Content-Length", "Content-Length: " },
-  { "Content-Location", "Content-Location: " },
-  { "Content-Range", "Content-Range: " },
-  { "Content-Security-Policy", "Content-Security-Policy: " },
-  { "Content-Security-Policy-Report-Only", "Content-Security-Policy-Report-Only: " },
-  { "Content-Type", "Content-Type: " },
-  { "Cookie", "Cookie: " },
-  { "Cross-Origin-Embedder-Policy", "Cross-Origin-Embedder-Policy: " },
-  { "Cross-Origin-Embedder-Policy-Report-Only", "Cross-Origin-Embedder-Policy-Report-Only: " },
-  { "Cross-Origin-Opener-Policy", "Cross-Origin-Opener-Policy: " },
-  { "Cross-Origin-Opener-Policy-Report-Only", "Cross-Origin-Opener-Policy-Report-Only: " },
-  { "Cross-Origin-Resource-Policy", "Cross-Origin-Resource-Policy: " },
-  { "DASL", "DASL: " },
-  { "Date", "Date: " },
-  { "DAV", "DAV: " },
-  { "Delta-Base", "Delta-Base: " },
-  { "Deprecation", "Deprecation: " },
-  { "Depth", "Depth: " },
-  { "Destination", "Destination: " },
-  { "Detached-JWS", "Detached-JWS: " },
-  { "Dictionary-ID", "Dictionary-ID: " },
-  { "DPoP", "DPoP: " },
-  { "DPoP-Nonce", "DPoP-Nonce: " },
-  { "Early-Data", "Early-Data: " },
-  { "ETag", "ETag: " },
-  { "Expect", "Expect: " },
-  { "Expires", "Expires: " },
-  { "Forwarded", "Forwarded: " },
-  { "From", "From: " },
-  { "Hobareg", "Hobareg: " },
-  { "Host", "Host: " },
-  { "If", "If: " },
-  { "If-Match", "If-Match: " },
-  { "If-Modified-Since", "If-Modified-Since: " },
-  { "If-None-Match", "If-None-Match: " },
-  { "If-Range", "If-Range: " },
-  { "If-Schedule-Tag-Match", "If-Schedule-Tag-Match: " },
-  { "If-Unmodified-Since", "If-Unmodified-Since: " },
-  { "IM", "IM: " },
-  { "Include-Referred-Token-Binding-ID", "Include-Referred-Token-Binding-ID: " },
-  { "Keep-Alive", "Keep-Alive: " },
-  { "Label", "Label: " },
-  { "Last-Event-ID", "Last-Event-ID: " },
-  { "Last-Modified", "Last-Modified: " },
-  { "Link", "Link: " },
-  { "Link-Template", "Link-Template: " },
-  { "Location", "Location: " },
-  { "Lock-Token", "Lock-Token: " },
-  { "Max-Forwards", "Max-Forwards: " },
-  { "Memento-Datetime", "Memento-Datetime: " },
-  { "Meter", "Meter: " },
-  { "MIME-Version", "MIME-Version: " },
-  { "Negotiate", "Negotiate: " },
-  { "NEL", "NEL: " },
-  { "OData-EntityId", "OData-EntityId: " },
-  { "OData-Isolation", "OData-Isolation: " },
-  { "OData-MaxVersion", "OData-MaxVersion: " },
-  { "OData-Version", "OData-Version: " },
-  { "Optional-WWW-Authenticate", "Optional-WWW-Authenticate: " },
-  { "Ordering-Type", "Ordering-Type: " },
-  { "Origin", "Origin: " },
-  { "Origin-Agent-Cluster", "Origin-Agent-Cluster: " },
-  { "OSCORE", "OSCORE: " },
-  { "OSLC-Core-Version", "OSLC-Core-Version: " },
-  { "Overwrite", "Overwrite: " },
-  { "Ping-From", "Ping-From: " },
-  { "Ping-To", "Ping-To: " },
-  { "Position", "Position: " },
-  { "Prefer", "Prefer: " },
-  { "Preference-Applied", "Preference-Applied: " },
-  { "Priority", "Priority: " },
-  { "Proxy-Authenticate", "Proxy-Authenticate: " },
-  { "Proxy-Authentication-Info", "Proxy-Authentication-Info: " },
-  { "Proxy-Authorization", "Proxy-Authorization: " },
-  { "Proxy-Status", "Proxy-Status: " },
-  { "Public-Key-Pins", "Public-Key-Pins: " },
-  { "Public-Key-Pins-Report-Only", "Public-Key-Pins-Report-Only: " },
-  { "Range", "Range: " },
-  { "Redirect-Ref", "Redirect-Ref: " },
-  { "Referer", "Referer: " },
-  { "Referrer-Policy", "Referrer-Policy: " },
-  { "Refresh", "Refresh: " },
-  { "Replay-Nonce", "Replay-Nonce: " },
-  { "Repr-Digest", "Repr-Digest: " },
-  { "Retry-After", "Retry-After: " },
-  { "Schedule-Reply", "Schedule-Reply: " },
-  { "Schedule-Tag", "Schedule-Tag: " },
-  { "Sec-Fetch-Dest", "Sec-Fetch-Dest: " },
-  { "Sec-Fetch-Mode", "Sec-Fetch-Mode: " },
-  { "Sec-Fetch-Site", "Sec-Fetch-Site: " },
-  { "Sec-Fetch-User", "Sec-Fetch-User: " },
-  { "Sec-Purpose", "Sec-Purpose: " },
-  { "Sec-Token-Binding", "Sec-Token-Binding: " },
-  { "Sec-WebSocket-Accept", "Sec-WebSocket-Accept: " },
-  { "Sec-WebSocket-Extensions", "Sec-WebSocket-Extensions: " },
-  { "Sec-WebSocket-Key", "Sec-WebSocket-Key: " },
-  { "Sec-WebSocket-Protocol", "Sec-WebSocket-Protocol: " },
-  { "Sec-WebSocket-Version", "Sec-WebSocket-Version: " },
-  { "Server", "Server: " },
-  { "Server-Timing", "Server-Timing: " },
-  { "Set-Cookie", "Set-Cookie: " },
-  { "Signature", "Signature: " },
-  { "Signature-Input", "Signature-Input: " },
-  { "SLUG", "SLUG: " },
-  { "SoapAction", "SoapAction: " },
-  { "Status-URI", "Status-URI: " },
-  { "Strict-Transport-Security", "Strict-Transport-Security: " },
-  { "Sunset", "Sunset: " },
-  { "TCN", "TCN: " },
-  { "TE", "TE: " },
-  { "Timeout", "Timeout: " },
-  { "Topic", "Topic: " },
-  { "Traceparent", "Traceparent: " },
-  { "Tracestate", "Tracestate: " },
-  { "Trailer", "Trailer: " },
-  { "Transfer-Encoding", "Transfer-Encoding: " },
-  { "TTL", "TTL: " },
-  { "Upgrade", "Upgrade: " },
-  { "Urgency", "Urgency: " },
-  { "Use-As-Dictionary", "Use-As-Dictionary: " },
-  { "User-Agent", "User-Agent: " },
-  { "Variant-Vary", "Variant-Vary: " },
-  { "Vary", "Vary: " },
-  { "Via", "Via: " },
-  { "Want-Content-Digest", "Want-Content-Digest: " },
-  { "Want-Repr-Digest", "Want-Repr-Digest: " },
-  { "WWW-Authenticate", "WWW-Authenticate: " },
-  { "X-Content-Type-Options", "X-Content-Type-Options: " },
-  { "X-Frame-Options", "X-Frame-Options: " },
-  { "*", "*: " },
-  { "Activate-Storage-Access", "Activate-Storage-Access: " },
-  { "AMP-Cache-Transform", "AMP-Cache-Transform: " },
-  { "CMCD-Object", "CMCD-Object: " },
-  { "CMCD-Request", "CMCD-Request: " },
-  { "CMCD-Session", "CMCD-Session: " },
-  { "CMCD-Status", "CMCD-Status: " },
-  { "CMSD-Dynamic", "CMSD-Dynamic: " },
-  { "CMSD-Static", "CMSD-Static: " },
-  { "Configuration-Context", "Configuration-Context: " },
-  { "CTA-Common-Access-Token", "CTA-Common-Access-Token: " },
-  { "EDIINT-Features", "EDIINT-Features: " },
-  { "Isolation", "Isolation: " },
-  { "Permissions-Policy", "Permissions-Policy: " },
-  { "Repeatability-Client-ID", "Repeatability-Client-ID: " },
-  { "Repeatability-First-Sent", "Repeatability-First-Sent: " },
-  { "Repeatability-Request-ID", "Repeatability-Request-ID: " },
-  { "Repeatability-Result", "Repeatability-Result: " },
-  { "Reporting-Endpoints", "Reporting-Endpoints: " },
-  { "Sec-Fetch-Storage-Access", "Sec-Fetch-Storage-Access: " },
-  { "Sec-GPC", "Sec-GPC: " },
-  { "Surrogate-Capability", "Surrogate-Capability: " },
-  { "Surrogate-Control", "Surrogate-Control: " },
-  { "Timing-Allow-Origin", "Timing-Allow-Origin: " },
-}
-
----@type SourceTable
-local header_values = {
-  { "Bearer " },
-  { "Basic " },
-  { "Digest " },
-  { "NTLM " },
-  { "Negotiate" },
-  { "AWS" },
-  { "application/json" },
-  { "application/xml" },
-  { "application/x-www-form-urlencoded" },
-  { "application/octet-stream" },
-  { "application/pdf" },
-  { "application/zip" },
-  { "text/plain" },
-  { "text/html" },
-  { "text/css" },
-  { "text/javascript" },
-  { "text/xml" },
-  { "image/jpeg" },
-  { "image/png" },
-  { "image/gif" },
-  { "image/svg+xml" },
-  { "image/webp" },
-  { "audio/mpeg" },
-  { "audio/wav" },
-  { "audio/ogg" },
-  { "video/mp4" },
-  { "video/webm" },
-  { "video/ogg" },
-  { "multipart/form-data" },
-  { "multipart/form-data; boundary=----WebKitFormBoundary{{$timestamp}}" },
-  { "application/x-www-form-urlencoded" },
-  { "chunked" },
-  { "gzip" },
-  { "deflate" },
-  { "br" },
-  { "identity" },
-  { "compress" },
-  { "x-gzip" },
-  { "x-bzip2" },
-  { "x-compress" },
-  { "x-zip-compress" },
-  { "x-zip" },
-}
-
----@type SourceTable
-local metadata = {
-  { "prompt", "prompt ", "Prompt" },
-  { "curl", "curl", "Curl flag" },
-  { "curl-global", "curl-global", "Curl global flag" },
-  { "grpc", "grpc", "Grpc flag" },
-  { "grpc-global", "Grpc-global", "Grpc global flag" },
-  { "accept", "accept chunked", "Accept chunked responses" },
-  { "env-stdin-cmd", "env-stdin-cmd ", "Set env variable with external cmd" },
-  { "env-json-key", "env-json-key ", "Set env variable with json key" },
-  { "stdin-cmd", "env-stdin-cmd ", "Run external command" },
-  { "jq", "jq ", "Filter response body with jq" },
-}
-
----@type SourceTable
-local curl = {
-  { "curl-compressed", "curl-compressed", "Decompress response" },
-  { "curl-location", "curl-location", "Follow redirects" },
-  { "curl-no-buffer", "curl-no-buffer", "Disable buffering" },
-}
-
----@type SourceTable
-local grpc = {
-  { "grpc-import-path", "grpc-import-path", "Proto import path" },
-  { "grpc-proto", "grpc-proto", "Proto file" },
-  { "grpc-protoset", "grpc-protoset", "Protoset file" },
-  { "grpc-plaintext", "grpc-plaintext", "No TLS" },
-  { "grpc-v", "grpc-verbose", "Verbose" },
-}
-
----@type SourceTable
-local script_client = {
-  { "client.global.get", "client.global.get(${1:varName})$0", "Get a  global variable" },
-  { "client.global.set", "client.global.set(${1:varName}, ${2:value})$0", "Set a global variable" },
-  { "client.log", "client.log(${1:message})$0", "Log message" },
-  { "client.test", "client.test(${1:name}, ${2:fn})$0", "Define a test suite" },
-  { "client.assert", "client.assert(${1:value}, ${2:message?})$0", "Checks if the value is truthy" },
-  { "client.isEmpty", "client.isEmpty()$0", "Check if global variables are empty" },
-  { "client.clear", "client.clear(${1:varName})$0", "Clear a global variable" },
-  { "client.clearAll", "client.clearAll()$0", "Clear all global variables" },
-  { "client.exit", "client.exit()$0", "Exit script" },
-}
-
----@type SourceTable
-local script_request = {
-  { "request.variables.set", "request.variables.set(${1:varName}, ${2:value})$0", "Set a request variable" },
-  { "request.variables.get", "request.variables.get(${1:varName})$0", "Get a request variable" },
-  { "request.headers.all", "request.headers.all()$0", "Get all request headers" },
-  { "name", "name()$0", "Get header name" },
-  {
-    "getRawValue",
-    "getRawValue()$0",
-    "Get raw request header value",
-  },
-  {
-    "tryGetSubstituted",
-    "tryGetSubstituted()$0",
-    "Get substituted request header value",
-  },
-  {
-    "request.headers.findByName",
-    "request.headers.findByName(${1:name})$0",
-    "Find request header by name",
-  },
-  { "request.body.getRaw", "request.body.getRaw()$0", "Get raw request body" },
-  {
-    "request.body.tryGetSubstituted",
-    "request.body.tryGetSubstituted()$0",
-    "Get substituted request body",
-  },
-  {
-    "request.body.getComputed",
-    "request.body.getComputed()$0",
-    "Get computed request body",
-  },
-  { "request.environment.get", "request.environment.get(${1:varName})$0", "Get environment variable" },
-  { "request.method", "request.method()$0", "Get request method" },
-  { "request.url.getRaw", "request.url.getRaw()$0", "Get raw request URL" },
-  {
-    "request.url.tryGetSubstituted",
-    "request.url.tryGetSubstituted()$0",
-    "Get substituted request URL",
-  },
-  { "request.skip", "request.skip()$0", "Skip request" },
-  { "request.replay", "request.replay()$0", "Replay request" },
-}
-
----@type SourceTable
-local script_response = {
-  { "response.responseCode", "response.responseCode()$0", "Get response code" },
-  { "response.body", "response.body()$0", "Get response body" },
-  { "response.headers.all", "response.headers.all()$0", "Get all response headers" },
-  { "valueOf", "valueOf()$0", "Get response header value" },
-  { "valuesOf", "valuesOf()$0", "Get all response header values" },
-}
-
----@type SourceTable
-local script_assert = {
-
-  { "assert", "assert(${1:value}, ${2:message?})$0", "Checks if the value is truthy" },
-  { "assert.true", "assert.true(${1:value}, ${2:message?})$0", "Checks if the value is true" },
-  { "assert.false", "assert.false(${1:value}, ${2:message?})$0", "Checks if the value is false" },
-  {
-    "assert.same",
-    "assert.same(${1:value}, ${2:expected}, ${3:message?})$0",
-    "Checks if the value is the same as the expected value",
-  },
-  {
-    "assert.hasString",
-    "assert.hasString(${1:value}, ${2:expected}, ${3:message?})$0",
-    "Checks if the string contains the expected substring",
-  },
-  {
-    "assert.responseHas",
-    "assert.responseHas(${1:key}, ${2:expected}, ${3:message?})$0",
-    "Checks if the response has the expected key with the expected value",
-  },
-  {
-    "assert.headersHas",
-    "assert.headersHas(${1:key}, ${2:expected}, ${3:message?})$0",
-    "Checks if the response headers have the expected key with the expected value",
-  },
-  {
-    "assert.bodyHas",
-    "assert.bodyHas(${1:expected}, ${2:message?})$0",
-    "Checks if the response body contains the expected string",
-  },
-  {
-    "assert.jsonHas",
-    "assert.jsonHas(${1:key}, ${2:expected}, ${3:message?})$0",
-    "Checks if the JSON response has the expected key with the expected value",
-  },
-}
-
 local function make_item(label, description, kind, detail, documentation, text, format, score)
   return {
-    label = label,
+    label = label or "",
     labelDetails = {
-      description = description,
+      description = description or "",
     },
-    kind = kind,
-    detail = detail,
+    kind = kind or "",
+    detail = detail or "",
     documentation = {
-      value = documentation,
+      value = documentation or "",
       kind = vim.lsp.protocol.MarkupKind.Markdown,
     },
-    insertText = text,
+    insertText = text or "",
     insertTextFormat = format or lsp_format.PlainText,
     sortText = score or tostring(1.02), -- fix for blink.cmp
   }
@@ -494,10 +66,11 @@ local function generic_source(source)
   return items
 end
 
-local current_buffer = 0
-local current_line = 0
-local current_ft = nil
-local formatter = false
+local state = {
+  current_buffer = 0,
+  current_line = 0, -- 1-based line number
+  current_ft = nil,
+}
 
 local cache = {
   buffer = nil,
@@ -509,20 +82,25 @@ local cache = {
   auth_configs = nil,
   scripts = nil,
   symbols = nil,
+  graphql = {},
   is_fresh = function(self)
-    return self.buffer == current_buffer and self.lnum == current_line
+    return self.buffer == state.current_buffer and self.lnum == state.current_line
   end,
   update = function(self)
-    self.buffer = current_buffer
-    self.lnum = current_line
+    self.buffer = state.current_buffer
+    self.lnum = state.current_line
   end,
 }
 
 local function get_document()
   if cache:is_fresh() and cache.document_variables and cache.requests then return end
 
-  Db.set_current_buffer(current_buffer)
-  cache.document_variables, cache.requests = Parser.get_document()
+  Db.set_current_buffer(state.current_buffer)
+  cache.requests = Parser.get_document()
+  cache.document_variables = vim.iter(cache.requests):fold({}, function(acc, request)
+    return vim.tbl_extend("force", acc, request.variables)
+  end)
+
   cache:update()
 end
 
@@ -536,8 +114,8 @@ local function request_names()
 
   vim.iter(cache.requests):each(function(request)
     local file = vim.fs.basename(request.file)
-    local name = request.name:sub(1, url_len)
-    table.insert(items, make_item(name, file, kind, name, request.body, name))
+    local short_name = request.name:sub(1, url_len)
+    table.insert(items, make_item(short_name, file, kind, request.name, request.body, request.name))
   end)
 
   return items
@@ -576,8 +154,12 @@ end
 
 local function dynamic_variables()
   local kind = lsp_kind.Variable
-  local auth_vars = { ["$auth.token"] = "Auth", ["$auth.idToken"] = "Auth" }
   local items = {}
+
+  local auth_vars = {
+    ["$auth.token"] = "Oauth2 Access Token",
+    ["$auth.idToken"] = "Oauth2 Id Token",
+  }
 
   cache.dynamic_variables = cache.dynamic_variables or Dynamic_variables.retrieve_all()
 
@@ -590,7 +172,7 @@ local function dynamic_variables()
   local format = lsp_format.Snippet
 
   vim.iter(auth_vars):each(function(name, value)
-    table.insert(items, make_item(name, "Dynamic var", kind, name, value, name:sub(2) .. '("$1")$0', format))
+    table.insert(items, make_item(name, "Dynamic var", kind, name, value, "\\" .. name .. '("$1")$0', format))
   end)
 
   return items
@@ -619,7 +201,8 @@ local function auth_configs()
   cache.auth_configs = cache.auth_configs or Oauth.get_env()
 
   vim.iter(vim.tbl_keys(cache.auth_configs)):each(function(name)
-    table.insert(items, make_item(name, "Auth", kind, name, "", name))
+    local config = vim.inspect(cache.auth_configs[name]):sub(1, 300)
+    table.insert(items, make_item(name, "Auth Config", kind, name, config, name))
   end)
 
   return items
@@ -630,12 +213,162 @@ local function scripts()
 
   cache.scripts = {}
 
-  vim.list_extend(cache.scripts, script_client)
-  vim.list_extend(cache.scripts, script_request)
-  vim.list_extend(cache.scripts, script_response)
-  vim.list_extend(cache.scripts, script_assert)
+  vim.list_extend(cache.scripts, Lsp_sources.script_client)
+  vim.list_extend(cache.scripts, Lsp_sources.script_request)
+  vim.list_extend(cache.scripts, Lsp_sources.script_response)
+  vim.list_extend(cache.scripts, Lsp_sources.script_assert)
 
   return cache.scripts
+end
+
+local function find_upwards(cur_line, pattern)
+  for i = cur_line - 1, 0, -1 do
+    local line = vim.api.nvim_buf_get_lines(state.current_buffer, i, i + 1, false)[1] or ""
+    local match = line:match(pattern)
+
+    if match then return match, i end
+    if line:match("###") then break end
+  end
+end
+
+local function get_graphql_type(req_name, field_name, type)
+  local description = "`kind:` [" .. type.kind .. "]"
+
+  description = type.name and (description .. ", `name:` [" .. type.name .. "]") or description
+  description = type.ofType and (description .. " (" .. get_graphql_type(req_name, field_name, type.ofType) .. ")")
+    or description
+
+  if type.kind == "OBJECT" then cache.graphql[req_name].field_types[field_name] = type.name end
+
+  return description
+end
+
+local function get_graphql_args(req_name, field_name, args)
+  local kind = lsp_kind.Variable
+
+  return vim
+    .iter(args or {})
+    :map(function(arg)
+      local type = get_graphql_type(req_name, field_name, arg.type)
+      local details = "`name`: [" .. arg.name .. "]\n" .. "`type`: " .. type .. "\n"
+
+      details = arg.defaultValue and (details .. "`defaultValue`: " .. arg.defaultValue .. "\n") or details
+
+      return make_item(arg.name, "GQL:arg", kind, arg.name, details, arg.name)
+    end)
+    :totable()
+end
+
+local function get_graphql_fields(req_name, fields)
+  local kind = lsp_kind.Variable
+
+  return vim
+    .iter(fields or {})
+    :map(function(field)
+      local details = { "`type`: " .. get_graphql_type(req_name, field.name, field.type) }
+      local args = get_graphql_args(req_name, field.name, field.args)
+
+      _ = #args > 0
+        and table.insert(details, "\n**args**:\n" .. vim
+          .iter(args)
+          :fold("", function(acc, item)
+            return acc .. item.documentation.value .. "\n"
+          end)
+          :gsub("\n$", ""))
+
+      local item = make_item(field.name, "GQL:field", kind, field.name, table.concat(details, "\n"), field.name)
+      item.args = args
+
+      return item
+    end)
+    :totable()
+end
+
+local function get_graphql_types(req_name, types)
+  local kind = lsp_kind.Variable
+
+  return vim
+    .iter(types)
+    :map(function(type)
+      local fields = get_graphql_fields(req_name, type.fields)
+      local details = {}
+
+      table.insert(details, "**kind**: " .. type.kind)
+      _ = type.description and table.insert(details, "**description:** " .. type.description)
+
+      _ = #fields > 0
+        and table.insert(details, "\n**fields:**\n\n" .. vim.iter(fields):fold("", function(acc, item)
+          return acc .. item.documentation.value .. "\n"
+        end))
+
+      local item = make_item(type.name, "GQL:type", kind, type.name, table.concat(details, "\n"), type.name)
+      item.fields = fields
+
+      return item
+    end)
+    :totable()
+end
+
+local function graphql()
+  get_document()
+
+  vim.treesitter.get_parser(state.current_buffer):parse()
+
+  local node = vim.treesitter.get_node()
+  if node and node:type() == "json_body" then return {} end
+
+  local request = vim.iter(cache.requests or {}):find(function(r)
+    return state.current_line >= r.start_line - 1 and state.current_line <= r.end_line - 1
+  end)
+
+  if not request then return {} end
+
+  local schema_name = request.url
+  if schema_name:find("{{") then
+    env_variables()
+    schema_name = VarParser.parse(schema_name, cache.document_variables or {}, cache.env_variables or {})
+  end
+
+  schema_name = schema_name:gsub("https?://", ""):match("([^/]+)")
+
+  if not cache.graphql[schema_name] or cache.graphql[schema_name] == "no_schema" then
+    local schema_path = Fs.get_current_buffer_dir() .. "/" .. schema_name .. ".graphql-schema.json"
+    local schema = Fs.read_json(schema_path)
+
+    if not schema then
+      -- show warining only once
+      _ = not cache.graphql[schema_name]
+        and Logger.warn("Cannot find " .. schema_path .. ". LSP GraphQL features will not be available.")
+      cache.graphql[schema_name] = "no_schema"
+      return {}
+    end
+
+    cache.graphql[schema_name] = { queryType = schema.data.__schema.queryType.name, types = {}, field_types = {} }
+    cache.graphql[schema_name].types = get_graphql_types(schema_name, schema.data.__schema.types)
+  end
+
+  local lnum, cnum = state.current_line - 1, vim.fn.col(".") - 1
+  local is_args = vim.api.nvim_buf_get_text(state.current_buffer, lnum, 0, lnum, cnum, {})[1]:match("%s*(.+)%s*%(")
+
+  local parent = find_upwards(lnum, "%s*([^%s%(]+).*{")
+  parent = parent == "query" and cache.graphql[schema_name].queryType
+    or cache.graphql[schema_name].field_types[parent]
+    or parent
+
+  local parent_type = vim.iter(cache.graphql[schema_name].types):find(function(item)
+    return item.label:lower() == parent:lower()
+  end)
+
+  if not parent_type or not parent_type.fields then return cache.graphql[schema_name].types end
+
+  if is_args then
+    local field = vim.iter(parent_type.fields):find(function(item)
+      return item.label:lower() == is_args:lower()
+    end)
+    return field and field.args or {}
+  end
+
+  return parent_type.fields
 end
 
 ---@class Source
@@ -653,28 +386,31 @@ local sources = {
   dynamic_variables = dynamic_variables,
   env_variables = env_variables,
   auth_configs = auth_configs,
-  methods = { methods, "Method" },
-  schemes = { schemes, "Scheme" },
-  header_names = { header_names, "Header" },
-  header_values = { header_values, "Header" },
-  metadata = { metadata, "Metadata" },
-  curl = { curl, "Curl" },
-  grpc = { grpc, "Grpc" },
-  commands = { commands, "Command" },
+  methods = { Lsp_sources.methods, "Method" },
+  schemes = { Lsp_sources.schemes, "Scheme" },
+  header_names = { Lsp_sources.header_names, "Header name" },
+  header_values = { Lsp_sources.header_values, "Header value" },
+  metadata = { Lsp_sources.metadata, "Metadata" },
+  curl = { Lsp_sources.curl, "Curl" },
+  grpc = { Lsp_sources.grpc, "Grpc" },
+  commands = { Lsp_sources.commands, "Command" },
   scripts = { scripts(), "API", false, lsp_kind.Snippet, lsp_format.Snippet },
-  snippets = { snippets, "Snippets", false, lsp_kind.Snippet, lsp_format.Snippet },
+  snippets_in = { Lsp_sources.snippets_in, "Snippets", false, lsp_kind.Snippet, lsp_format.Snippet },
+  snippets_out = { Lsp_sources.snippets_out, "Snippets", false, lsp_kind.Snippet, lsp_format.Snippet },
+  graphql = graphql,
 }
 
 local function source_type(params)
-  local line = vim.api.nvim_buf_get_lines(current_buffer, params.position.line, params.position.line + 1, false)[1]
-  line = line:sub(1, params.position.character)
+  local line =
+    vim.api.nvim_buf_get_lines(state.current_buffer, params.position.line, params.position.line + 1, false)[1]
+
+  line = line and line:sub(1, params.position.character) or ""
 
   local matches = {
     { "@curl%-", "curl" },
-    { "@curl%-global%-", "curl" },
-    { "@grpc%-global%-", "grpc" },
-    { "run #", "request_names" },
-    { "auth(.+)oken%(", "auth_configs" },
+    { "@grpc%-", "grpc" },
+    { "^run #", "request_names" },
+    { '%$auth%.%w+oken%("[^"]+$', "auth_configs" },
     { "{{%$", "dynamic_variables" },
     { "{{", { "document_variables", "env_variables", "request_names" } },
     { "{%%", "scripts" },
@@ -683,25 +419,21 @@ local function source_type(params)
     { ".:[^/]*", "header_values" },
     { "# @", "metadata" },
     { "[A-Z]+ ", { "schemes", "request_urls" } },
-    { "<", "snippets" },
-    { ">", "snippets" },
+    { "<", "snippets_in" },
+    { ">", "snippets_out" },
   }
+
+  if state.current_ft == "javascript" then return { "scripts" } end
 
   for _, match in ipairs(matches) do
     if line:match(match[1]) then return match[2] end
   end
 
-  local is_script = false
-  for i = params.position.line, 1, -1 do
-    local l = vim.api.nvim_buf_get_lines(current_buffer, i, i + 1, false)[1]
-    if l:match("###") then break end
-    if l:match("{%%") then
-      is_script = true
-      break
-    end
+  if find_upwards(params.position.line, "query.*{") or find_upwards(params.position.line, "mutation.*{") then
+    return { "graphql", "urls" }
   end
 
-  if is_script then return { "scripts", "urls", "headers_names", "header_values" } end
+  if find_upwards(params.position.line, "{%%") then return { "scripts", "urls", "header_names", "header_values" } end
 
   return { "commands", "methods", "schemes", "urls", "header_names", "snippets" }
 end
@@ -728,15 +460,22 @@ local get_source = function(params)
 end
 
 local function code_actions_fmt()
-  return { { title = "Convert to HTTP", command = "convert_http", fn = Fmt.convert } }
+  return { { group = "Formatting", title = "Convert to HTTP", command = "convert_http", fn = Fmt.convert } }
 end
 
 local function code_actions_http()
   return {
-    { title = "Copy as cURL", command = "copy_as_curl", fn = Kulala.copy },
-    { title = "Paste from curl", command = "paste_from_curl", fn = Kulala.from_curl },
-    { title = "Inspect current request", command = "inspect_current_request", fn = Kulala.inspect },
+    { group = "cURL", title = "Copy as cURL", command = "copy_as_curl", fn = Kulala.copy },
     {
+      group = "cURL",
+      title = "Paste from curl",
+      command = "paste_from_curl",
+      fn = Kulala.from_curl,
+    },
+    { group = "Request", title = "Inspect current request", command = "inspect_current_request", fn = Kulala.inspect },
+    { group = "Request", title = "Open Cookies Jar", command = "open_cookie_jar", fn = Kulala.open_cookies_jar },
+    {
+      group = "Environment",
       title = "Select environment",
       command = "select_environment",
       fn = function()
@@ -744,33 +483,58 @@ local function code_actions_http()
       end,
     },
     {
+      group = "Authentication",
       title = "Manage Auth Config",
       command = "manage_auth_config",
       fn = require("kulala.ui.auth_manager").open_auth_config,
     },
-    { title = "Replay last request", command = "replay_last request", fn = Kulala.replay },
-    { title = "Download GraphQL schema", command = "download_graphql_schema", fn = Kulala.download_graphql_schema },
+    { group = "Request", title = "Replay last request", command = "replay_last request", fn = Kulala.replay },
     {
+      group = "GraphQL",
+      title = "Download GraphQL schema",
+      command = "download_graphql_schema",
+      fn = Kulala.download_graphql_schema,
+    },
+    {
+      group = "Environment",
       title = "Clear globals",
       command = "clear_globals",
       fn = function()
         Kulala.scripts_clear_global()
       end,
     },
-    { title = "Clear cached files", command = "clear_cached_files", fn = Kulala.clear_cached_files },
-    { title = "Send request", command = "run_request", fn = Ui.open },
     {
+      group = "Environment",
+      title = "Clear cached files",
+      command = "clear_cached_files",
+      fn = Kulala.clear_cached_files,
+    },
+    { group = "Request", title = "Send request", command = "run_request", fn = Ui.open },
+    {
+      group = "Request",
       title = "Send all requests",
       command = "run_request_all",
       fn = function()
         Ui.open_all()
       end,
     },
+    {
+      group = "Request",
+      title = "Export file",
+      command = "export_file",
+      fn = Export.export_requests,
+    },
+    {
+      group = "Request",
+      title = "Export folder",
+      command = "export_folder",
+      fn = Export.export_requests,
+    },
   }
 end
 
 local function code_actions()
-  return (current_ft == "http" or current_ft == "rest") and code_actions_http() or code_actions_fmt()
+  return (state.current_ft == "http" or state.current_ft == "rest") and code_actions_http() or code_actions_fmt()
 end
 
 local function get_symbol(name, kind, lnum, cnum)
@@ -809,7 +573,9 @@ local function get_symbols()
   vim.iter(cache.requests):each(function(request)
     local cnum = 0
     local line = request.show_icon_line_number - 2
-    symbol = get_symbol(request.name, kind.Function, line) or {}
+
+    symbol = get_symbol(request.name, kind.Function, line)
+    if not symbol then return end
 
     if #request.scripts.pre_request.inline + #request.scripts.pre_request.files > 0 then
       table.insert(symbol.children, get_symbol("|< Pre-request script", kind.Module, line - 2))
@@ -853,36 +619,70 @@ local function get_hover(_)
 end
 
 local function format(params)
-  if not formatter then return end
+  if not Config.options.lsp.formatter then return end
 
-  params.range = params.range or { start = { line = 0 }, ["end"] = { line = -2 } }
+  local formatted_lines = Formatter.format(state.current_buffer, params)
+  return formatted_lines or {}
+end
 
-  local l_start, l_end = params.range.start.line, params.range["end"].line + 1
-  local lines = vim.api.nvim_buf_get_lines(current_buffer, l_start, l_end, false)
+M.foldtext = function()
+  vim.api.nvim_set_option_value(
+    "foldtext",
+    "v:lua.require'kulala.cmd.lsp'.foldtext()",
+    { win = vim.api.nvim_get_current_win() }
+  )
 
-  local formatted_lines = Fmt.format(lines)
-  if not formatted_lines then return end
+  local line = vim.fn.getline(vim.v.foldstart)
+  return "▶ " .. line .. " [" .. (vim.v.foldend - vim.v.foldstart + 1) .. " lines]"
+end
 
-  return {
-    {
-      range = {
-        start = { line = l_start, character = 0 },
-        ["end"] = { line = #lines, character = 0 },
-      },
-      newText = formatted_lines,
-    },
-  }
+local function folding()
+  if not vim.api.nvim_buf_is_loaded(state.current_buffer) then return {} end
+
+  local tree = vim.treesitter.get_parser(state.current_buffer, "kulala_http"):parse()[1]
+  local root = tree:root()
+
+  local ranges = {}
+
+  local function traverse(node)
+    for child in node:iter_children() do
+      local start_row, _, end_row, _ = child:range()
+
+      local type = child:type()
+      local kind = type == "comment" and type or "region"
+
+      if type == "request_separator" then
+        start_row = start_row + 1
+        end_row = select(3, child:parent():range())
+      end
+
+      if end_row > start_row and child:type() ~= "section" then
+        table.insert(ranges, {
+          startLine = start_row,
+          endLine = end_row - 1,
+          kind = kind,
+          type = child:type(),
+        })
+      end
+
+      traverse(child)
+    end
+  end
+
+  traverse(root)
+
+  return ranges
 end
 
 local function initialize(params)
   local ft = params.rootPath:sub(2)
-  formatter = Config.options.formatter and Fmt.check_formatter(function()
-    formatter = true
-  end)
+  local capabilities
 
-  if ft ~= "http" and ft ~= "rest" then return { capabilities = { codeActionProvider = true } } end
-
-  return {
+  if ft == "javascript" then
+    capabilities = { completionProvider = { triggerCharacters = trigger_chars } }
+  elseif ft ~= "http" and ft ~= "rest" then
+    capabilities = { codeActionProvider = true }
+  else
     capabilities = {
       codeActionProvider = true,
       documentSymbolProvider = true,
@@ -890,7 +690,16 @@ local function initialize(params)
       completionProvider = { triggerCharacters = trigger_chars },
       documentFormattingProvider = true,
       documentRangeFormattingProvider = true,
-    },
+      foldingRangeProvider = {
+        dynamicRegistration = false,
+        lineFoldingOnly = true,
+      },
+    }
+  end
+
+  return {
+    serverInfo = { name = "Kulala LSP", version = Globals.VERSION },
+    capabilities = capabilities,
   }
 end
 
@@ -902,8 +711,22 @@ local handlers = {
   ["textDocument/codeAction"] = code_actions,
   ["textDocument/formatting"] = format,
   ["textDocument/rangeFormatting"] = format,
+  ["textDocument/foldingRange"] = folding,
   ["shutdown"] = function() end,
 }
+
+local function set_current_buf(params)
+  if not (params and params.textDocument and params.textDocument.uri) then return end
+
+  local buf = vim.uri_to_bufnr(params.textDocument.uri)
+  local buf_valid = vim.api.nvim_buf_is_valid(buf)
+
+  state.current_buffer = buf_valid and buf or 0
+  state.current_ft = buf_valid and vim.api.nvim_get_option_value("filetype", { buf = buf }) or nil
+
+  local win = buf_valid and vim.fn.win_findbuf(buf)[1] or 0
+  state.current_line = vim.api.nvim_win_get_cursor(win)[1]
+end
 
 local function new_server()
   local function server(dispatchers)
@@ -912,16 +735,14 @@ local function new_server()
 
     function srv.request(method, params, handler)
       local status, error = xpcall(function()
-        if params and params.textDocument then
-          current_buffer = vim.uri_to_bufnr(params.textDocument.uri)
-          current_line = vim.api.nvim_win_get_cursor(vim.fn.bufwinid(current_buffer))[1]
-          current_ft = vim.api.nvim_get_option_value("filetype", { buf = current_buffer })
-        end
-
+        set_current_buf(params)
         _ = handlers[method] and handler(nil, handlers[method](params))
       end, debug.traceback)
 
-      if not status then require("kulala.logger").error("Errors in Kulala LSP:\n" .. (error or ""), 2) end
+      if not status then
+        require("kulala.logger").error("Errors in Kulala LSP:\n" .. (error or ""), 2, { report = true })
+      end
+
       return true
     end
 
@@ -970,8 +791,10 @@ function M.start_lsp(buf, ft)
     cmd = server,
     root_dir = ft,
     bufnr = buf,
-    on_init = function(_client) end,
-    on_exit = function(_code, _signal) end,
+    on_attach = function(client, bufnr)
+      _ = (ft == "http" or ft == "rest") and Diagnostics.setup(bufnr)
+      _ = Config.options.lsp.on_attach and Config.options.lsp.on_attach(client, bufnr)
+    end,
     commands = vim.iter(actions):fold({}, function(acc, action)
       acc[action.command] = action.fn
       return acc

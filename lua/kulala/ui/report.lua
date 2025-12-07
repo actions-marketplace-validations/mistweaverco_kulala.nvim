@@ -28,6 +28,7 @@ local function set_response_summary(buf)
   local assert_status = response.assert_status and "success" or (response.assert_status == false and "failed" or "-")
   local idx = UI.get_current_response_pos()
   local duration = UI_utils.pretty_ms(response.duration)
+  local cur_env = vim.g.kulala_selected_env or CONFIG.get().default_env
 
   local data = vim
     .iter({
@@ -47,13 +48,15 @@ local function set_response_summary(buf)
         "URL: "
           .. response.method
           .. " "
-          .. response.url
+          .. response.url:gsub("\n", "")
+          .. "  Env: "
+          .. cur_env
           .. "  Status: "
           .. response.response_code
           .. "  Assert: "
           .. assert_status,
       },
-      { "Buffer: " .. response.buf_name .. "::" .. response.line },
+      { "Buffer: " .. response.buf_name .. "::" .. response.line .. "  Name: " .. response.name },
       { "" },
     })
     :flatten()
@@ -124,10 +127,10 @@ local function get_report_summary(stats)
   local config = CONFIG.get().ui.report
   local summary = {}
 
-  local tbl = UI_utils.Ptable:new({
+  local tbl = UI_utils.Ptable:new {
     header = { "Summary", "Total", "Successful", "Failed" },
     widths = { 20, 20, 20, 20 },
-  })
+  }
 
   table.insert(summary, { tbl:get_headers(), config.headersHighlight })
   table.insert(summary, {
@@ -175,10 +178,10 @@ local function generate_requests_report()
   local row, report = "", {}
   local stats
 
-  local tbl = UI_utils.Ptable:new({
+  local tbl = UI_utils.Ptable:new {
     header = { "Line", "URL", "Status", "Time", "Duration" },
     widths = { 5, 50, 8, 10, 15 },
-  })
+  }
 
   table.insert(report, { tbl:get_headers(), config.headersHighlight })
   table.insert(report, { "" })

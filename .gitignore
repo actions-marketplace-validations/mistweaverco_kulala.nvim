@@ -1,6 +1,7 @@
 .env
 .tests
 .nvim
+.log*
 
 node_modules
 package-lock.json
@@ -13,11 +14,16 @@ http-client.env.json
 !/docs/**/*.json
 
 /http-examples
+/lua/tree-sitter/testing
+
 *.http
+!/lua/tree-sitter/**/*.http
 !/docs/**/*.http
 !/tests/**/*.http
-!/tests/functional/requests/*.http
 
-todo.md
+
+.luarc.json
 selene.toml
 neovim.yml
+.todo.md
+AGENTS.md

@@ -207,6 +207,14 @@ Replays the current request. Useful for conditional requests, see below.
 request.replay();
 ```
 
+## request.iteration
+
+Returns the current count of request replays.
+
+```javascript
+request.replay();
+```
+
 ### Conditional requests
 
 ```http
@@ -226,5 +234,53 @@ GET https://httpbin.org/status/{{URL}}
     request.variables.set('URL', "200");
     request.replay()
   }
+%}
+```
+
+### Iterating over results and making requests for each item
+
+```http
+### Request_one
+
+POST https://httpbin.org/post HTTP/1.1
+Accept: application/json
+Content-Type: application/json
+
+{
+  "results": [
+    { "id": 1, "desc": "some_username" },
+    { "id": 2, "desc": "another_username" }
+  ]
+}
+
+> {%
+  client.global.set("results", response.body.json.results); // save results to global variable, as js does not have access to responses history
+%}
+
+
+### Request_two
+
+< {%
+  const results = client.global.get("results");
+  if (!results) { return; }
+  
+  const item = results[request.iteration() - 1]; // get item by index
+
+  if (!item) { 
+    client.global.set("results", null);
+    return request.skip(); // skip if no more items
+  }
+
+  client.log(item);
+
+  const url = "https://httpbin.org/get";
+  request.variables.set("url", url + "?" + item.desc); // update url variable, cannot access request.url_raw like in lua
+%}
+
+GET {{url}}
+
+> {%
+  const results = client.global.get("results");
+  if (results) { request.replay(); }
 %}
 ```

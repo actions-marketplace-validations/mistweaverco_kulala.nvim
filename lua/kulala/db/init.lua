@@ -60,18 +60,19 @@ M.global_data = {
 }
 
 M.current_buffer = nil
+M.current_request = nil
 
 ---Gets DB.current_buffer or if it does not exist, then sets it to current buffer
 ---@return number
 M.get_current_buffer = function()
   local buf = M.current_buffer
-  return vim.fn.bufexists(buf) > 0 and buf or M.set_current_buffer()
+  return vim.api.nvim_buf_is_valid(buf or -1) and buf or M.set_current_buffer()
 end
 
 ---Sets DB.current_buffer to provided buffer_id or to current buffer
 ---@param id number|nil
 M.set_current_buffer = function(id)
-  M.current_buffer = id and id or vim.fn.bufnr()
+  M.current_buffer = id and id or vim.api.nvim_get_current_buf()
   return M.current_buffer
 end
 
@@ -149,6 +150,9 @@ local mt_settings
 
 mt_settings = {
   __index = {
+    --- @param self table,
+    --- @param update table <string, any>
+    --- @return table
     write = function(self, update)
       Table.merge("force", self, update or {})
       FS.write_json(GLOBAL.SETTINGS_FILE, vim.deepcopy(self))

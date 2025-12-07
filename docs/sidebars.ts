@@ -1,4 +1,4 @@
-import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
+import type { SidebarsConfig } from '@docusaurus/plugin-content-docs';
 
 const sidebars: SidebarsConfig = {
   defaultSidebar: [
@@ -33,11 +33,13 @@ const sidebars: SidebarsConfig = {
         'usage/http-file-spec',
         "usage/using-variables",
         "usage/request-variables",
+        "usage/cookies",
         "usage/using-environment-variables",
         "usage/dotenv-and-http-client.env.json-support",
         "usage/magic-variables",
         "usage/authentication",
         "usage/import-and-run-http",
+        "usage/shared-blocks",
         "usage/reading-file-data",
         "usage/filter-response",
         "usage/redirect-the-response",
@@ -52,9 +54,11 @@ const sidebars: SidebarsConfig = {
         "usage/streaming-and-transfer-chunked",
         "usage/custom-curl-flags",
         "usage/public-methods",
+        "usage/import-export",
         "usage/api",
-        "usage/cli-ci"
-        'usage/demos'
+        "usage/cli-ci",
+        'usage/demos',
+        'usage/recipes'
       ],
     },
     {

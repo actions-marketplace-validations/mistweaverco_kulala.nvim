@@ -1,4 +1,6 @@
 ---@diagnostic disable: undefined-field, redefined-local
+local config = require("kulala.config")
+local db = require("kulala.db")
 local fs = require("kulala.utils.fs")
 local h = require("test_helper")
 local parser = require("kulala.parser.request")
@@ -20,7 +22,7 @@ describe("requests", function()
 
     describe("parser", function()
       it("processes document variables", function()
-        dynamic_vars.stub({ ["$timestamp"] = "$TIMESTAMP" })
+        dynamic_vars.stub { ["$timestamp"] = "$TIMESTAMP" }
 
         h.create_buf(
           ([[
@@ -28,6 +30,8 @@ describe("requests", function()
             @REQ_USERNAME = Test_user
             @REQ_PASSWORD = Test_password
             @MY_COOKIE = awesome=me
+            @page = ONE
+            @VAR_NAME_TEST_abc-0123456789 = Test_var_name_ok
 
             POST https://httpbingo.org/basic-auth/{{REQ_USERNAME}}/{{REQ_PASSWORD}} HTTP/1.1
             Content-Type: application/json
@@ -38,8 +42,11 @@ describe("requests", function()
 
             {
               "Timeout": {{DEFAULT_TIMEOUT}},
-              "Timestamp": {{$timestamp}}
+              "Timestamp": {{$timestamp}},
+              "VarNameTest": "{{VAR_NAME_TEST_abc-0123456789}}"
             }
+
+            >> institutions_{{page}}.json
       ]]):to_table(true),
           "test.http"
         )
@@ -57,8 +64,14 @@ describe("requests", function()
           body = ([[
             {
               "Timeout": 5000,
-              "Timestamp": $TIMESTAMP
+              "Timestamp": $TIMESTAMP,
+              "VarNameTest": "Test_var_name_ok"
             }]]):to_string(true),
+          redirect_response_body_to_files = {
+            {
+              file = "institutions_ONE.json",
+            },
+          },
         })
       end)
 
@@ -85,26 +98,50 @@ describe("requests", function()
       it("processes curl flags", function()
         h.create_buf(
           ([[
-            # @curl-global-compressed
+            ### Shared
+            # @curl-compressed
             POST https://httpbingo.org/1
+
             ###
             # @curl-location
+            # @curl-data-urlencode
+            # @curl-connect-timeout 1000
             POST https://httpbingo.org/2
+            Content-Type: application/json
+
+            { "key": "value" }
       ]]):to_table(true),
           "test.http"
         )
 
+        h.send_keys("2j")
         result = parser.parse() or {}
+
         assert.is_true(vim.tbl_contains(result.cmd, "--compressed"))
 
-        h.send_keys("4j")
-
+        h.send_keys("8j")
         result = parser.parse() or {}
+
         assert.is_true(vim.tbl_contains(result.cmd, "--compressed"))
         assert.is_true(vim.tbl_contains(result.cmd, "--location"))
+        assert.is_true(vim.tbl_contains(result.cmd, "--data-urlencode"))
+        assert.is_true(vim.tbl_contains(result.cmd, "--connect-timeout"))
+        assert.is_true(vim.tbl_contains(result.cmd, "1000"))
       end)
 
-      it("processes request only if it has not been processed yet", function()
+      it("processes SSL Configuration", function()
+        h.create_buf(
+          ([[
+            POST https://httpbingo.org/1
+      ]]):to_table(true),
+          h.expand_path("requests/simple.http")
+        )
+
+        result = parser.parse() or {}
+        assert.is_true(vim.tbl_contains(result.cmd, "--insecure"))
+      end)
+
+      it("processes urlencodes url only if it has not been done yet", function()
         h.create_buf(
           ([[
             GET https://typicode.com/todos?date=2020-01-01 12:34:56
@@ -115,9 +152,7 @@ describe("requests", function()
         result = parser.parse() or {}
         assert.is_same("https://typicode.com/todos?date=2020-01-01%2012%3A34%3A56", result.url)
 
-        result.processed = true
-
-        result = parser.parse({ result })
+        result = parser.parse { result } or {}
         assert.is_same("https://typicode.com/todos?date=2020-01-01%2012%3A34%3A56", result.url)
       end)
 
@@ -140,10 +175,10 @@ describe("requests", function()
         h.create_buf(
           ([[
             # @name SIMPLE REQUEST
+            # GET https://httpbingo.org/simple
             POST https://httpbingo.org/simple
 
             {
-              # "skip": "true",
               "test": "value"
             }
       ]]):to_table(true),
@@ -151,17 +186,17 @@ describe("requests", function()
         )
 
         result = parser.parse() or {}
-        assert.is_same(result.body:gsub("\n", ""), '{"test": "value"}')
+        assert.is_same("POST", result.method)
       end)
 
       it("skips lines commented out with //", function()
         h.create_buf(
           ([[
             # @name SIMPLE REQUEST
+            // GET request
             POST https://httpbingo.org/simple
 
             {
-              // "skip": "true",
               "test": "value"
             }
       ]]):to_table(true),
@@ -169,7 +204,7 @@ describe("requests", function()
         )
 
         result = parser.parse() or {}
-        assert.is_same(result.body:gsub("\n", ""), '{"test": "value"}')
+        assert.is_same("POST", result.method)
       end)
 
       describe("processes url", function()
@@ -270,17 +305,35 @@ describe("requests", function()
           -- `?`, `&`, `=`, `/`, `#`, `:` special syntax
 
           assert_url(
-            { "https://my.server.com/api/v1/object?filter=A B&C:D&E?F&G#H&I=J/K&L%M#fragment" },
+            { "https://my.server.com/api/v1/object?filter=A BC:D&EF&G#HI=J/K&L%M#fragment" },
             "GET",
-            "https://my.server.com/api/v1/object?filter=A%20B&C%3AD&E%3FF&G%23H&I=J%2FK&L%25M#fragment"
+            "https://my.server.com/api/v1/object?filter=A%20BC%3AD&EF&G%23HI=J/K&L%25M#fragment"
           )
           assert_url(
             {
               [[https://my.server.com/api/v1/object?filter=owner.address.city in ["Berlin", "München", "Nürnberg"]']],
             },
             "GET",
-            [[https://my.server.com/api/v1/object?filter=owner.address.city%20in%20%5B%22Berlin%22%2C%20%22M%C3%BCnchen%22%2C%20%22N%C3%BCrnberg%22%5D%27]]
+            [[https://my.server.com/api/v1/object?filter=owner.address.city%20in%20%5B%22Berlin%22,%20%22M%C3%BCnchen%22,%20%22N%C3%BCrnberg%22%5D']]
           )
+          assert_url(
+            { 'httpbin.org/post?filter={"conditions":{}}' },
+            "GET",
+            "httpbin.org/post?filter=%7B%22conditions%22%3A%7B%7D%7D"
+          )
+          assert_url(
+            { "httpbin.org/post(with space)/?filter=A eq 'XYZ'" },
+            "GET",
+            "httpbin.org/post(with%20space)/?filter=A%20eq%20'XYZ'"
+          )
+
+          config.options.urlencode = "skipencoded"
+          assert_url(
+            { "https://httpbin.org/Company%27WITH%20SPACE%27" },
+            "GET",
+            "https://httpbin.org/Company%27WITH%20SPACE%27"
+          )
+          config.options.urlencode = "always"
         end)
       end)
 
@@ -292,6 +345,7 @@ describe("requests", function()
             Content-Type: application/x-www-form-urlencoded
             User-Agent: header with : colons and [
             Origin: https://httpbingo.org
+            Empty-Header:
           ]]):to_table(true),
           h.expand_path("requests/simple.http")
         )
@@ -303,7 +357,35 @@ describe("requests", function()
           ["Content-Type"] = "application/x-www-form-urlencoded",
           ["User-Agent"] = "header with : colons and [",
           ["Origin"] = "https://httpbingo.org",
+          ["Empty-Header"] = "",
         })
+      end)
+
+      it("processes auth headers", function()
+        local credentials = {
+          "myuser:mypassword",
+          "my user:mypassword",
+          "myuser:my password",
+        }
+
+        vim.iter(credentials):each(function(cred)
+          h.create_buf(
+            ([[
+            POST https://httpbingo.org/simple
+            content-type: application/json
+            Authorization: Basic %s
+          ]]):format(cred):to_table(true),
+            h.expand_path("requests/simple.http")
+          )
+
+          result = parser.parse() or {}
+
+          assert.has_properties(result.headers, { ["Authorization"] = nil })
+          assert.has_string(result.cmd, "-u")
+          assert.has_string(result.cmd, cred)
+
+          h.delete_all_bufs()
+        end)
       end)
 
       it("sets headers from http-client", function()
@@ -459,6 +541,23 @@ describe("requests", function()
         assert.has_string(h.load_fixture(result.body_temp_file, true), expected)
       end)
 
+      it("replaces nested variables", function()
+        h.create_buf(
+          ([[
+            POST https://httpbin.org/post
+            Token: {{deep.nested.var}}
+          ]]):to_table(true),
+          h.expand_path("requests/simple.http")
+        )
+
+        result = parser.parse() or {}
+        assert.has_properties(result, {
+          headers = {
+            ["Token"] = "deep-nested-variable",
+          },
+        })
+      end)
+
       it("replaces variables in .json files", function()
         h.create_buf(
           ([[
@@ -556,7 +655,7 @@ describe("requests", function()
             "test.http"
           )
 
-          result = select(2, doc_parser.get_document()) or {}
+          result = doc_parser.get_document() or {}
           assert.is_same("https://httpbin.org/post", result[1].url)
           assert.is_same("https://httpbin.org/advanced_1", result[2].url)
           assert.is_same("https://httpbin.org/advanced_2", result[3].url)
@@ -581,7 +680,7 @@ describe("requests", function()
             "test.http"
           )
 
-          local _, requests = doc_parser.get_document()
+          local requests = doc_parser.get_document()
           result = doc_parser.get_request_at(requests, 13) or {}
 
           assert.is_same("https://httpbin.org/post", result[1].url)
@@ -606,11 +705,14 @@ describe("requests", function()
             "test.http"
           )
 
-          result = doc_parser.get_document() or {}
+          h.send_keys("8j") -- Request 2
+          result = parser.parse() or {}
 
-          assert.is_same("new_bar", result["foobar"])
-          assert.is_same("new_username", result["ENV_USER"])
-          assert.is_same("project_name", result["ENV_PROJECT"])
+          assert.has_properties(result.variables, {
+            foobar = "new_bar",
+            ENV_USER = "new_username",
+            ENV_PROJECT = "project_name",
+          })
         end)
 
         it("imports and runs nested imports/requests", function()
@@ -624,7 +726,8 @@ describe("requests", function()
             h.expand_path("requests/simple.http")
           )
 
-          _, result = doc_parser.get_document()
+          result = doc_parser.get_document()
+          result = doc_parser.get_request_at(result, 0) or {}
 
           assert.is_same(4, #result)
 
@@ -637,6 +740,166 @@ describe("requests", function()
           assert_url(2, "https://httpbin.org/advanced_b", "advanced_B.http")
           assert_url(3, "https://httpbin.org/advanced_1", "advanced_A.http")
           assert_url(4, "https://httpbin.org/imported", "import.http")
+        end)
+      end)
+
+      describe("processes the shared block", function()
+        before_each(function()
+          h.create_buf(
+            ([[
+            ### Shared
+
+            @shared_var_1 = shared_value_1
+            @shared_var_2 = shared_value_2
+
+            # @curl-connect-timeout 20
+            # @curl-location
+
+            < {%
+              console.log("pre request 0")
+            %}
+
+            < ../scripts/advanced_D_pre.js
+
+            POST https://httpbingo.org/0
+
+            > {%
+              console.log("post request 0")
+            %}
+
+            > ../scripts/advanced_D_post.js
+
+            ### request 1
+
+            @shared_var_2 = local_value_2
+            @local_var = local_value
+
+            # @curl-connect-timeout 10
+            # @curl-data-urlencode
+
+            POST https://httpbingo.org/1
+          ]]):to_table(true),
+            h.expand_path("requests/simple.http")
+          )
+        end)
+
+        it("processes the shared block", function()
+          h.send_keys("25j") -- request 1
+          result = parser.parse() or {}
+
+          assert.is_same("https://httpbingo.org/1", result.url)
+
+          assert.is_same("https://httpbingo.org/0", result.shared.url)
+
+          assert.has_properties(result.shared.variables, {
+            shared_var_1 = "shared_value_1",
+            shared_var_2 = "local_value_2",
+          })
+
+          assert.has_properties(result.shared.metadata, {
+            { name = "curl-connect-timeout", value = "20" },
+            { name = "curl-location", value = "" },
+          })
+
+          assert.has_properties(result.shared.scripts, {
+            pre_request = {
+              files = { h.expand_path("requests") .. "/../scripts/advanced_D_pre.js" },
+              inline = { 'console.log("pre request 0")' },
+              priority = "inline",
+            },
+
+            post_request = {
+              files = { h.expand_path("requests") .. "/../scripts/advanced_D_post.js" },
+              inline = { 'console.log("post request 0")' },
+              priority = "inline",
+            },
+          })
+        end)
+
+        it("applies shared data", function()
+          h.send_keys("25j") -- request 1
+          result = parser.parse() or {}
+
+          assert.is_same("https://httpbingo.org/1", result.url)
+
+          assert.has_properties(result.variables, {
+            shared_var_1 = "shared_value_1",
+            shared_var_2 = "local_value_2",
+            local_var = "local_value",
+          })
+
+          assert.has_properties(result.metadata, {
+            { name = "curl-connect-timeout", value = "10" },
+            { name = "curl-data-urlencode", value = "" },
+            { name = "curl-location", value = "" },
+          })
+        end)
+
+        it("applies variables_scope", function()
+          config.options.variables_scope = "request"
+
+          h.send_keys("25j") -- request 1
+          result = parser.parse() or {}
+
+          config.options.variables_scope = "document"
+
+          assert.is_same("https://httpbingo.org/1", result.url)
+
+          assert.has_properties(result.shared.variables, {
+            shared_var_1 = "shared_value_1",
+            shared_var_2 = "shared_value_2",
+          })
+
+          assert.has_properties(result.variables, {
+            shared_var_2 = "local_value_2",
+            local_var = "local_value",
+          })
+        end)
+      end)
+
+      describe("processes http-client.env.json", function()
+        before_each(function()
+          h.create_buf(([[ POST https://httpbingo.org/0 ]]):to_table(true), h.expand_path("requests/simple.http"))
+        end)
+
+        after_each(function()
+          h.delete_all_bufs()
+        end)
+
+        it("processes http-client.env.json", function()
+          result = parser.parse() or {}
+
+          local shared_env = db.find_unique("http_client_env_shared") or {}
+          local dev_env = db.find_unique("http_client_env")["dev"] or {}
+          local prod_env = db.find_unique("http_client_env")["prod"] or {}
+
+          assert.has_properties(shared_env, {
+            ["$default_headers"] = {
+              Accept = "application/json",
+              Origin = "httpbin.org",
+            },
+            DEFAULT_TIMEOUT = 1,
+          })
+
+          assert.has_properties(dev_env, {
+            ["$default_headers"] = {
+              ["Test-Header"] = "Test-Value",
+            },
+            PASSWORD = "bananas",
+            pokemon_root = "ditto",
+            Security = {
+              Auth = {
+                GAPI = {
+                  ["Auth URL"] = "https://auth.url",
+                },
+              },
+            },
+          })
+
+          assert.has_properties(prod_env, {
+            PASSWORD = "polo",
+            pokemon_root = "pikachu",
+          })
         end)
       end)
     end)

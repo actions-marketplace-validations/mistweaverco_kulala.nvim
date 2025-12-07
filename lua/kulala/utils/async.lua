@@ -11,7 +11,11 @@ M.co_resume = function(co, ...)
   if not co or coroutine.status(co) ~= "suspended" then return false end
 
   local result = { coroutine.resume(co, ...) }
-  if not result[1] then return Logger.error("Error in coroutine: " .. result[2]) end
+  if not result[1] then
+    local trace = debug.traceback(co, result[2])
+    return Logger.error("Error in coroutine: " .. trace, 1, { report = true })
+  end
+
   return unpack(result)
 end
 
@@ -23,18 +27,24 @@ end
 M.co_yield = function(co, timeout, ...)
   if not co or coroutine.status(co) ~= "running" then return false end
 
+  local timer, resumed
+
   if timeout then
-    local timer = vim.uv.new_timer()
+    timer = vim.uv.new_timer()
     timer:start(timeout, 0, function()
       timer:close()
-      M.co_resume(co, false, "timeout")
+      if not resumed then M.co_resume(co, "timeout") end
     end)
   end
 
-  return true, coroutine.yield(...)
+  local result = { coroutine.yield(...) }
+  resumed = true
+  if timer then pcall(timer.close, timer) end
+
+  return true, unpack(result)
 end
 
----If in coroutine, wraps a function in vim.schedule and executes it, waiting for the result
+---If in coroutine, wraps a function in vim.schedule and executes it, suspending the coroutine until completion
 ---@param co thread
 ---@param fn function
 ---@param ... any, ... any

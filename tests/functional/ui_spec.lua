@@ -12,17 +12,18 @@ local h = require("test_helper")
 
 describe("UI", function()
   local curl, system, wait_for_requests
-  local input, notify, dynamic_vars
+  local input, output, notify, dynamic_vars
   local lines, result, expected, http_buf, ui_buf
 
   before_each(function()
     h.delete_all_bufs()
 
     input = h.Input.stub()
+    output = h.Output.stub()
     notify = h.Notify.stub()
     dynamic_vars = h.Dynamic_vars.stub()
 
-    curl = h.Curl.stub({
+    curl = h.Curl.stub {
       ["*"] = {
         stats = h.load_fixture("fixtures/stats.json"),
       },
@@ -36,7 +37,7 @@ describe("UI", function()
         body = h.load_fixture("fixtures/request_2_body.txt"),
         errors = h.load_fixture("fixtures/request_2_errors.txt"),
       },
-    })
+    }
 
     system = h.System.stub({ "curl" }, {
       on_call = function(system)
@@ -51,14 +52,14 @@ describe("UI", function()
       end)
     end
 
-    kulala_config = CONFIG.setup({
+    kulala_config = CONFIG.setup {
       global_keymaps = true,
       ui = {
         default_view = "body",
         display_mode = "float",
         show_request_summary = true,
       },
-    })
+    }
 
     lines = h.to_table(
       [[
@@ -79,6 +80,7 @@ describe("UI", function()
     curl.reset()
     system.reset()
     input.reset()
+    output.reset()
     notify.reset()
     dynamic_vars.reset()
   end)
@@ -111,6 +113,8 @@ describe("UI", function()
       db.responses = {}
       db.current_response_pos = 1
 
+      vim.uv.os_setenv("TZ", "UTC")
+
       ---@diagnostic disable-next-line: missing-fields
       table.insert(db.responses, {
         status = true,
@@ -123,6 +127,7 @@ describe("UI", function()
         method = "GET",
         line = 15,
         buf_name = "test.txt",
+        name = "Request 1",
         body = h.load_fixture("fixtures/request_2_headers_body.txt"),
         headers = "",
       })
@@ -152,11 +157,11 @@ describe("UI", function()
     end)
 
     it("for current line in in non-http buffer and strips comments chars", function()
-      curl.stub({
+      curl.stub {
         ["https://httpbin.org/advanced_1"] = {
           body = h.load_fixture("fixtures/advanced_A_1_body.txt"),
         },
-      })
+      }
 
       h.create_buf(
         ([[
@@ -178,11 +183,11 @@ describe("UI", function()
     end)
 
     it("for current selection in in non-http buffer", function()
-      curl.stub({
+      curl.stub {
         ["https://httpbin.org/advanced_1"] = {
           body = h.load_fixture("fixtures/advanced_A_1_body.txt"),
         },
-      })
+      }
 
       h.create_buf(
         ([[
@@ -226,7 +231,7 @@ describe("UI", function()
       local expected_computed_body = '{\n"project": "project_name",\n"results": [\n{\n"id": 1,\n"desc": "bar"\n},\n]\n}'
 
       assert.is_same(expected_computed_body, computed_body)
-      assert.has_string(notify.messages, "TEST LOG")
+      assert.has_string(output.log, "TEST LOG")
     end)
 
     it("last request in body_headers mode for run_all", function()
@@ -338,11 +343,11 @@ describe("UI", function()
       ]]):to_table(true)
       )
 
-      curl.stub({
+      curl.stub {
         ["https://httpbin.org/simple"] = {
           body = h.load_fixture("fixtures/simple_body.txt"),
         },
-      })
+      }
 
       kulala.run()
       wait_for_requests(1)
@@ -350,11 +355,13 @@ describe("UI", function()
       result = h.get_buf_lines(ui_buf):to_string()
       assert.has_string(result, 'JQ Filter: { "Content": .headers["Content-Type"], "url": .url }')
 
+      vim.api.nvim_set_current_buf(ui_buf)
       vim.api.nvim_buf_set_lines(ui_buf, 4, 5, false, { 'JQ Filter: { "Content": .json.foo }' })
+
       vim.api.nvim_win_set_cursor(h.get_kulala_win(), { 5, 0 })
       ui.keymap_enter()
 
-      result = h.get_buf_lines(h.get_kulala_buf())
+      result = h.get_buf_lines(ui_buf)
       assert.has_string(result, '"Content": "bar"')
     end)
   end)
@@ -364,8 +371,8 @@ describe("UI", function()
       DB.global_update().responses = {}
       h.delete_all_bufs()
 
-      input.stub({ ["PROMPT_VAR prompt"] = "TEST_PROMPT_VAR" })
-      curl.stub({
+      input.stub { ["PROMPT_VAR prompt"] = "TEST_PROMPT_VAR" }
+      curl.stub {
         ["https://httpbin.org/advanced_e1"] = {
           headers = h.load_fixture("fixtures/advanced_E_headers.txt"),
           body = h.load_fixture("fixtures/advanced_E1_body.txt"),
@@ -381,14 +388,16 @@ describe("UI", function()
           body = h.load_fixture("fixtures/advanced_E3_body.txt"),
           errors = h.load_fixture("fixtures/request_2_errors.txt"),
         },
-      })
+      }
     end)
 
-    it("stores responses of consequtive requests", function()
+    it("stores responses of consecutive requests", function()
       vim.cmd.edit(h.expand_path("requests/advanced_E.http"))
 
       kulala.run_all()
       wait_for_requests(3)
+
+      vim.api.nvim_set_current_buf(ui_buf)
 
       expected = h.load_fixture("fixtures/advanced_E3_body.txt")
       result = h.get_buf_lines(ui_buf):to_string()
@@ -464,13 +473,13 @@ describe("UI", function()
     it("shows failed requests and errors", function()
       kulala_config.halt_on_error = false
 
-      curl.stub({
+      curl.stub {
         ["https://request_1"] = {
           boby = '{ "data": { "foo": "baz" } }',
           stats = '{"response_code": 500}',
           errors = "Curt error",
         },
-      })
+      }
 
       h.create_buf(
         ([[
@@ -486,6 +495,8 @@ describe("UI", function()
 
       kulala.run_all()
       wait_for_requests(3)
+
+      vim.api.nvim_set_current_buf(ui_buf)
       h.send_keys("[")
 
       result = h.get_buf_lines(ui_buf):to_string()
@@ -512,6 +523,8 @@ describe("UI", function()
 
       kulala.run_all()
       wait_for_requests(3)
+
+      vim.api.nvim_set_current_buf(ui_buf)
       h.send_keys("X")
 
       result = h.get_buf_lines(ui_buf):to_string()
@@ -544,7 +557,9 @@ describe("UI", function()
       kulala.run()
       wait_for_requests(1)
 
+      vim.api.nvim_set_current_buf(ui_buf)
       h.send_keys("q")
+
       assert.is_false(vim.fn.bufexists(ui_buf) > 0)
     end)
 
@@ -646,8 +661,8 @@ describe("UI", function()
           and [[curl -X "POST" -v -s -H "Content-Type:application/json" --data-binary "{""foo"": ""bar""}" --cookie "cookie_key=value" -A "kulala.nvim/%s" "http://localhost:3001/request_1"]]
         or [[curl -X 'POST' -v -s -H 'Content-Type:application/json' --data-binary '{"foo": "bar"}' --cookie 'cookie_key=value' -A 'kulala.nvim/%s' 'http://localhost:3001/request_1']]
 
-      expected = (expected):format(GLOBALS.VERSION)
-      result = vim.fn.getreg("+")
+      expected = (expected):format(GLOBALS.VERSION):gsub("\n", "")
+      result = vim.fn.getreg("+"):gsub("\n", "")
       assert.is.same(expected, result)
     end)
 
@@ -656,6 +671,8 @@ describe("UI", function()
 
       kulala.run()
       wait_for_requests(1)
+
+      vim.api.nvim_set_current_buf(ui_buf)
 
       result = h.get_extmarks(ui_buf, 0, 1, { type = "virt_text" })[1][4].virt_text[1]
       assert.is_same("? - help", result[1])
@@ -676,7 +693,8 @@ describe("UI", function()
       wait_for_requests(1)
 
       result = vim.api.nvim_get_option_value("winbar", { win = vim.fn.bufwinid(ui_buf) })
-      expected = "%#KulalaTabSel# Body (B) %* %#KulalaTab# Report (R) %* %#KulalaTab# Help (?) %* <- [ ] ->"
+      expected =
+        "%#KulalaTabSel# %1@v:lua.require'kulala.ui.winbar'.select_winbar_tab@Body (B) %*%X %#KulalaTab# %2@v:lua.require'kulala.ui.winbar'.select_winbar_tab@Report (R) %*%X %#KulalaTab# %3@v:lua.require'kulala.ui.winbar'.select_winbar_tab@Help (?) %*%X <- [ ] ->"
       assert.same(expected, result)
     end)
   end)

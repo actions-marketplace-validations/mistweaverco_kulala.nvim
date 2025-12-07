@@ -11,25 +11,25 @@ Kulala supports `absolute`, `origin` and `asterisk path` formats for HTTP reques
 
 `Absolute` format: `HTTPMethod` `URL` `HTTPVersion`: 
 ```http
-GET https://weater.com:7220/weatherforecast
+GET https://weather.com:7220/weatherforecast?city=New York&day=2025-05-07
 ```
 
  `Origin` format: `HTTPMethod` `URL`:
 
 Single line
 ```http
-GET /api/get
+GET /api/get?id=123&value=some thing
 Host: example.com
 ```
 
 Multiline
 ```http
 GET http://example.com:8080
-    /api
-    /html
-    /get
-    ?id=123
-    &value=content
+ /api
+ /html
+ /get
+ ?id=123
+ &value=some "longer" content
 ```
 
  `Asterisk` format: `HTTPMethod` `URL`:
@@ -59,7 +59,7 @@ Host: http://example.com:8080
   - `wss`
 
 - `URL` is the URL to send the request to.
-  The URL can include query string parameters.
+  The URL can include query string parameters, which are automatically url-encoded.
   The URL doesn't have to point to a local web project and can point to any URL.
   Numeric IPv4 `http://127.0.0.1` and IPv6 `http://[::1]` addresses are supported.
 

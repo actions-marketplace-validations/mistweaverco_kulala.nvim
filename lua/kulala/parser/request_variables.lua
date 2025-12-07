@@ -1,7 +1,6 @@
-local CONFIG = require("kulala.config")
 local DB = require("kulala.db")
 local INT_PROCESSING = require("kulala.internal_processing")
-local Logger = require("kulala.logger")
+local Shell = require("kulala.cmd.shell_utils")
 
 local M = {}
 
@@ -38,19 +37,20 @@ local function get_body_value_from_path(name, method, subpath)
   local contenttype = INT_PROCESSING.get_config_contenttype(base_table.headers_tbl)
 
   if type(contenttype.pathresolver) == "function" then
-    return contenttype.pathresolver(base_table.body, subpath)
+    return contenttype.pathresolver(base_table.json or base_table.body, subpath) -- response body may be json parsed already
   elseif type(contenttype.pathresolver) == "table" then
     local cmd = {}
 
     for k, v in pairs(contenttype.pathresolver) do
-      if type(v) == "string" then v = string.gsub(v, "{{path}}", subpath) end
+      if type(v) == "string" then v = v:gsub("{{path}}", subpath) end
       cmd[k] = v
     end
 
-    local ret = vim.system(cmd, { stdin = base_table[method].body, text = true }):wait()
-    if ret.code ~= 0 then return Logger.error(("Error sourcing body contents from: %s"):format(ret.stderr)) end
-
-    return ret.stdout
+    local ret = Shell.run(
+      cmd,
+      { stdin = base_table.body, sync = true, err_msg = "Failed to run path resolver", abort_on_stderr = true }
+    )
+    return ret and ret.stdout
   end
 end
 
@@ -58,7 +58,11 @@ local function get_header_value_from_path(name, method, subpath)
   local base_table = get_data(name, method)
   if not base_table then return end
 
-  local result = base_table.headers_tbl
+  local result = vim.iter(base_table.headers_tbl):fold({}, function(acc, k, v)
+    acc[string.lower(k)] = v
+    return acc
+  end)
+
   local path_parts = {}
 
   -- Split the path into parts
@@ -67,13 +71,10 @@ local function get_header_value_from_path(name, method, subpath)
   end
 
   for _, key in ipairs(path_parts) do
-    key = tonumber(key) or key
+    key = tonumber(key) or key:lower()
 
-    if result[key] then
-      result = result[key]
-    else
-      return -- Return nil if any part of the path is not found
-    end
+    if not result[key] then return end
+    result = result[key]
   end
 
   return type(result) == "table" and result[1] or result
@@ -87,7 +88,7 @@ local function get_cookies_value_from_path(name, subpath)
   local path_parts = {}
 
   -- Split the path into parts
-  for part in string.gmatch(subpath, "[^%.%[%]\"']+") do
+  for part in subpath:gmatch("[^%.%[%]\"']+") do
     table.insert(path_parts, part)
   end
 
@@ -104,7 +105,6 @@ end
 
 M.parse = function(path)
   local path_name, path_method, path_type, path_subpath = get_match(path)
-
   if not (path_name and path_method and path_type and path_subpath) then return end
 
   if path_type == "headers" then
@@ -114,8 +114,6 @@ M.parse = function(path)
   elseif path_type == "body" then
     return get_body_value_from_path(path_name, path_method, path_subpath)
   end
-
-  return nil
 end
 
 return M

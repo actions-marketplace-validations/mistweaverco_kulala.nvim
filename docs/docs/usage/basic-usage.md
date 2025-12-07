@@ -11,19 +11,26 @@ There are several ways to execute a request:
 - Press `<leader>Ra` to run all requests in the buffer.
 - Press `<C-c>` to cancel request execution.
 - To search for a request in the buffer, press `<leader>Rf`.
-- You can use `#` or `//` to comment out a request or its data, and it wil not be processed.
+- You can use `#` or `//` to comment out a request or its data, and it will not be processed.
 
 ### Executing requests in non `.http` files
 
-- You can execute requests in any file type. However, since the `###` delimiters are only recognized in `.http` files, you will need to position the cursor exactly on the line with the request or visually select the required requests and their accompanying data.
-- Common comment syntax is recognized, so you can run requests that are commented out in your code, for example:
+- You can execute requests from any file type.  If you wrap your requests in a code block with ````http .. ````, it will behave just like in a `.http` file.
+- Common comment syntax is recognized, so you can put requests in the comments of your code files.
 
-```lua
-vim.system("curl -X GET http://localhost:3000")
+If you cannot wrap requests in a code block, you will need to position the cursor exactly on the line with the request or visually select the required 
+requests and their accompanying data.
 
--- POST http://localhost:3000
--- Content-Type: application/json
--- {"name": "John Doe"}
+```js
+// You javascript code here
+console.log('Hello world!');
+
+/* My test request
+
+```http
+POST http://localhost:3000
+Content-Type: application/json
+{"name": "John Doe"}
 
 ```
 
@@ -45,23 +52,16 @@ vim.system("curl -X GET http://localhost:3000")
 
 Kulala includes a built-in in-process LSP server that provides the following features:
 
-- Autocompletion: HTTP syntax, metadata, commands, variables, requests and API.
+- Autocompletion: HTTP syntax, metadata, commands, variables, requests, GraphQL schema and Kulala API.
 - Symbols information: symbols search and symbols outline - `<leader>cs`, `<leader>cS`.
 - Hover information for requests: equivalent to Kulala's inspect command - `K`.
 - Code actions: a list of all available Kulala commands - `gra/<leader>ca`.
-- Formatting: format buffer/range - `gq/<leader>cf`. 
+- Formatting: format buffer/range - `gq/<leader>cf/<leader>lf`. 
+- Folding
 
 - In `json/yaml/bruno` files, code actions will be available to convert collections into HTTP format.
 
 :::info
-
-HTTP Formatter is disabled by default. You can enable it in your config with:
-
-```lua
-ui = {
-  formatter = true
-}
-```
 
 Kulala LSP does not set any keymaps, but relies on your Neovim's default LSP keymaps. Some distributions set these keymaps only for LSPs that have been
 setup through `nvim-lspconfig` or the distributions's own LSP config. In this case, you may need to enable them yourself. 
@@ -75,7 +75,7 @@ For example:
 
 ```lua
 require('lspsaga').setup({
-  lightbulb = { ignore = { ft = { 'http' } } }
+  lightbulb = { ignore = { clients = { 'kulala' } } }
 })
 
 require("nvim-lightbulb").setup({
@@ -95,21 +95,24 @@ require("nvim-lightbulb").setup({
 
 - `# @meta-name meta-value` is used to add arbitrary metadata to a request or file.
 - `# @prompt variable-name prompt-string` is used to prompt the user for input and store it in a variable.
+- `# @secret variable-name prompt-string` same as `@prompt`, but the input is hidden (useful for passwords).
 
 #### Directives
 
-- `# @graphql` allows you to run a GraphQL query.
 - `# @accept chunked` allows you to accept Transfer-Encoding: chunked responses and streamed responses.
-- `# @curl-global-...` and `# @curl-...` allows you to set global and per-request flags for curl requests.
-- `# @grpc-global-...` and `# @grpc-...` allows you to set global and per-request flags for gRPC requests.
+- `# @curl-...` allows you to set flags for curl requests.
+- `# @grpc-...` allows you to set flags for gRPC requests.
+- `# @stdin-cmd-pre` allows you to execute an external command before the request is sent.
 - `# @stdin-cmd` allows you to execute an external command
 - `# @jq` allows you to filter the response body using jq.
+- `# @delay` allows you to set a delay (in milliseconds) before sending the request.
 
 #### Variables
 
 - `@variable-name=variable-value` is used to define variables that can be used in request URL, headers and body.
 - `{{variable}}` allows you to use variables defined in `metadata`, `system environment` variables, `http-client.env.json` file or `.env` file.
 - `{{$dynamic-variable}}` allows you to use predefined dynamic, aka `magic` variables.
+- `# @env-stdin-cmd-pre` allows you to set environment variables using an external command, before the request is sent.
 - `# @env-stdin-cmd` allows you to set environment variables using an external command.
 - `# @env-json-key` allows you to set environment variables using a JSON path on the response body.
 - `# @env-header-key` allows you to set environment variables from the response headers.
@@ -127,9 +130,9 @@ require("nvim-lightbulb").setup({
 
 #### Scripts
 
-- `> {% %}` and `> {% -- lua }` allow you to run an inline `pre-request` `js|lua` scripts.
-- `> /path/to/script.js|lua` allows you to run a `pre-request` `js|lua` script in a file.
-- `< {% %}` and `< {% --lua %}` allows you to run an inline `post-request` `js|lua` script.
-- `< /path/to/script.js|lua` allows you to run a `post-request` `js|lua` script in a file.
+- `< {% %}` and `< {% -- lua }` allow you to run an inline `pre-request` `js|lua` scripts.
+- `< /path/to/script.js|lua` allows you to run a `pre-request` `js|lua` script in a file.
+- `> {% %}` and `> {% --lua %}` allows you to run an inline `post-request` `js|lua` script.
+- `> /path/to/script.js|lua` allows you to run a `post-request` `js|lua` script in a file.
 
 For details please consult the corresponding sections in the documentation.

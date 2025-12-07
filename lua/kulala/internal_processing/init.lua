@@ -4,6 +4,7 @@ local FS = require("kulala.utils.fs")
 local GLOBALS = require("kulala.globals")
 local Json = require("kulala.utils.json")
 local Logger = require("kulala.logger")
+local Shell = require("kulala.cmd.shell_utils")
 
 local M = {}
 
@@ -113,20 +114,27 @@ local get_lower_headers_as_table = function(headers)
   return headers_table
 end
 
-M.get_config_contenttype = function(headers)
+M.get_config_contenttype = function(headers, view)
   headers = get_lower_headers_as_table(headers)
-
   local content_type = headers["content-type"]
 
   if content_type then
     content_type = type(content_type) == "table" and content_type[1] or content_type
-
     content_type = vim.split(content_type, ";")[1]
     content_type = vim.trim(content_type)
 
-    local config = CONFIG.get().contenttypes[content_type]
+    if view == "verbose" then
+      return content_type == "kulala/grpc_error" and { ft = "kulala_grpc_error" } or { ft = "kulala_verbose_result" }
+    end
+
+    local config_key = vim.iter(CONFIG.get().contenttypes):find(function(k, _)
+      return content_type:match(k)
+    end)
+
+    local config = config_key and CONFIG.get().contenttypes[config_key]
+
+    if config and type(config) == "string" then config = CONFIG.get().contenttypes[config] end
     if config then return config end
-    if content_type == "kulala/verbose" then return { ft = "kulala_verbose_result" } end
   end
 
   return CONFIG.default_contenttype
@@ -143,19 +151,33 @@ M.env_header_key = function(cmd)
   DB.update().env[variable_name] = value
 end
 
+local function format_json_response(fp)
+  local formatter = CONFIG.get().contenttypes["application/json"].formatter
+  if not formatter then return end
+
+  local cmd = { "sh", "-c", table.concat(formatter, " ") .. " '" .. GLOBALS.BODY_FILE .. "' " .. " > '" .. fp .. "'" }
+
+  Shell.run(cmd, {
+    err_msg = "Failed to format json while redirecting to " .. fp,
+    abort_on_stderr = true,
+  }, function()
+    Logger.info("Formatted JSON response in: " .. fp)
+  end)
+end
+
 M.redirect_response_body_to_file = function(data)
   if not FS.file_exists(GLOBALS.BODY_FILE) then return end
+
   for _, redirect in ipairs(data) do
-    local fp = FS.join_paths(FS.get_current_buffer_dir(), redirect.file)
-    if FS.file_exists(fp) then
-      if redirect.overwrite then
-        FS.copy_file(GLOBALS.BODY_FILE, fp)
-      else
-        Logger.warn("File already exists and overwrite is disabled: " .. fp)
-      end
+    local fp = FS.get_file_path(redirect.file)
+
+    if FS.file_exists(fp) and not redirect.overwrite then
+      return Logger.warn("File already exists,  use `>>!` to overwrite: " .. fp)
     else
       FS.copy_file(GLOBALS.BODY_FILE, fp)
     end
+
+    if vim.fn.fnamemodify(fp, ":e") == "json" and CONFIG.get().format_json_on_redirect then format_json_response(fp) end
   end
 end
 
@@ -168,18 +190,23 @@ M.env_json_key = function(cmd, response)
   DB.update().env[kv[1]] = value
 end
 
-M.prompt_var = function(metadata_value)
+M.prompt_var = function(metadata_value, secret)
+  local input = secret and vim.fn.inputsecret or vim.fn.input
   local kv = vim.split(metadata_value, " ")
 
   local var_name = kv[1]
   local prompt = table.concat(kv, " ", 2)
-  prompt = prompt == "" and "Enter value for variable: " .. var_name or prompt
+  prompt = prompt == "" and "Enter value for variable [" .. var_name .. "]: " or prompt
 
-  local value = vim.fn.input(prompt)
-  if not value or value == "" then return false end
+  local status, value = pcall(input, prompt)
+  if not status or not value or value == "" then return false end
 
   DB.update().env[var_name] = value
   return true
+end
+
+M.delay = function(ms)
+  vim.wait(ms)
 end
 
 M.get_cookies = get_cookies_as_table

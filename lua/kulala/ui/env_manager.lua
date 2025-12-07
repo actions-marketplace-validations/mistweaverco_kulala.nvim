@@ -10,7 +10,32 @@ local Logger = require("kulala.logger")
 
 local M = {}
 
+local template = {
+  ["$schema"] = "https://raw.githubusercontent.com/mistweaverco/kulala.nvim/main/schemas/http-client.env.schema.json",
+  ["$shared"] = {
+    ["$default_headers"] = {},
+  },
+  dev = {
+    Security = { Auth = {} },
+  },
+  prod = {},
+}
+
+local function create_env_file()
+  local name = "http-client.env.json"
+
+  local path = Fs.find_file_in_parent_dirs(name)
+  if path or vim.fn.confirm("Create " .. name .. "?", "&Yes\n&No") == 2 then return path end
+
+  path = Fs.get_current_buffer_dir() .. "/" .. name
+  Fs.write_json(path, template)
+  Logger.info("Created env file: " .. path)
+
+  return path
+end
+
 local function get_http_client_env()
+  create_env_file()
   Env.get_env()
   return DB.find_unique("http_client_env") or Logger.error("No environment found")
 end
@@ -62,7 +87,7 @@ local open_snacks = function()
     return acc
   end)
 
-  snacks_picker({
+  snacks_picker {
     title = "Select Environment",
     items = items,
     layout = Config.options.ui.pickers.snacks.layout,
@@ -89,7 +114,7 @@ local open_snacks = function()
       select_env(item.label)
       ctx:close()
     end,
-  })
+  }
 
   return true
 end
@@ -111,9 +136,9 @@ local open_telescope = function()
     .new({}, {
       prompt_title = "Select Environment",
 
-      finder = finders.new_table({
+      finder = finders.new_table {
         results = envs,
-      }),
+      },
 
       attach_mappings = function(prompt_bufnr)
         actions.select_default:replace(function()
@@ -125,14 +150,14 @@ local open_telescope = function()
         return true
       end,
 
-      previewer = previewers.new_buffer_previewer({
+      previewer = previewers.new_buffer_previewer {
         title = "Environment",
         define_preview = function(self, entry)
           set_buffer(self.state.bufnr, http_client_env[entry.value])
         end,
-      }),
+      },
 
-      sorter = config.generic_sorter({}),
+      sorter = config.generic_sorter {},
     })
     :find()
 end
@@ -159,10 +184,7 @@ local open_fzf = function()
 
   -- Disable line numbering and word wrap
   function env_previewer:gen_winopts()
-    return vim.tbl_extend("force", self.winopts, {
-      wrap = false,
-      number = false,
-    })
+    return vim.tbl_extend("force", self.winopts, { wrap = false, number = false })
   end
 
   local envs = get_env()
@@ -181,6 +203,8 @@ local open_fzf = function()
 end
 
 local function open_selector()
+  if not get_http_client_env() then return end
+
   local envs = get_env()
   local opts = { prompt = "Select env" }
 

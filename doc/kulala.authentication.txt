@@ -7,12 +7,14 @@ Table of Contents                    *kulala.authentication-table-of-contents*
   - Supported Authentication Types|kulala.authentication-authentication-supported-authentication-types|
   - Basic Authentication|kulala.authentication-authentication-basic-authentication|
   - Digest Authentication|kulala.authentication-authentication-digest-authentication|
+  - Web-browser based authentication|kulala.authentication-authentication-web-browser-based-authentication|
   - NTLM Authentication|kulala.authentication-authentication-ntlm-authentication|
   - Negotiate                 |kulala.authentication-authentication-negotiate|
   - Bearer Token           |kulala.authentication-authentication-bearer-token|
   - OAuth 2.0 Authorization|kulala.authentication-authentication-oauth-2.0-authorization|
   - AWS Signature V4   |kulala.authentication-authentication-aws-signature-v4|
   - SSL Client Certificate|kulala.authentication-authentication-ssl-client-certificate|
+  - Disable certificate verification|kulala.authentication-authentication-disable-certificate-verification|
 
 ==============================================================================
 1. Authentication                       *kulala.authentication-authentication*
@@ -56,20 +58,12 @@ If given it’ll be directly used in the HTTP request:
 <
 
 Furthermore you can enter username and password in plain text in the
-`Authorization` header field, Kulala will automatically encode it for you.
-
-There will be two possible ways to enter the credentials:
+`Authorization` header field, separated by a colon; Kulala will automatically
+encode it for you.
 
 >http
     GET https://www/api HTTP/1.1
     Authorization: Basic {{Username}}:{{Password}}
-<
-
-or
-
->http
-    GET https://www/api HTTP/1.1
-    Authorization: Basic {{Username}} {{Password}}
 <
 
 
@@ -89,6 +83,53 @@ or `username password`
 >http
     GET https://www/api HTTP/1.1
     Authorization: Digest {{Username}} {{Password}}
+<
+
+
+WEB-BROWSER BASED AUTHENTICATION*kulala.authentication-authentication-web-browser-based-authentication*
+
+Below is an example of how to simulate a web-browser based authentication with
+CSRF protection:
+
+>http
+    ### Acquire_XSRF_TOKEN
+    
+    GET localhost:8000/login
+    
+    > {%
+      -- lua
+      client.global.token = response.cookies["XSRF-TOKEN"].value
+      client.global.decoded_token = vim.uri_decode(client.global.token)
+      client.global.session = response.cookies["laravel_session"].value
+    %}
+    
+    ### Authentication
+    
+    POST localhost:8000/login
+    Content-Type: application/json
+    X-Xsrf-Token: {{decoded_token}}
+    Cookie: XSRF-TOKEN={{token}}
+    Cookie: laravel_session={{session}}
+    Referer: http://localhost:8000/login
+    
+    {
+      "email": "mail@mail.com",
+      "password": "passpass"
+    }
+    
+    > {%
+      -- lua
+      -- save the new set authenticated session
+      client.global.session = response.cookies["laravel_session"].value
+    %}
+    
+    ### Dashboard
+    
+    run #Acquire_XSRF_TOKEN
+    run #Authentication
+    
+    GET http://localhost:8000/dashboard
+    Cookie: laravel_session={{session}}
 <
 
 
@@ -206,8 +247,7 @@ You can manually create an authentication configuration in the
 `http-client.env.json` file or use Kulala Authentication Manager to create it
 for you.
 
-1. Press `<leader>Ru` to open the Authentication Manager, then press `a` to add
-a new authentication configuration.
+1. Press `<leader>Ru` to open the Authentication Manager, then press `a` to add a new authentication configuration.
 
 This will create a configuration template for the authentication configuration
 in the `http-client.env.json` file, under the current environment.
@@ -240,9 +280,15 @@ refer to this configuration in your .http file.
 Specify the authentication parameters. The required parameters depend on the
 selected "Grant Type". Remove unnecessary parameters from the template.
 
-2. To edit `http-client.env.json` file, press `e` in the Authentication
-Manager. Press `p` for `http-client.private.env.json` file and press `m` to
-remove the authentication configuration.
+1. To edit `http-client.env.json` file, press `e` in the Authentication Manager. Press `p` for `http-client.private.env.json` file and press `m` to remove the authentication configuration.
+
+It is recommended to store public authentication variables in the
+`http-client.env.json` file and private authentication variables, like `Client
+Secret`, in the `http-client.private.env.json` file. Auth configurations from
+both files get merged during authentications.
+
+Kulala will also use `http-client.private.env.json` file to store
+authentication data, such as access token, refresh token, and expiration time.
 
 
 USE AUTHENTICATION CONFIGURATION IN HTTP REQUESTS
@@ -262,16 +308,21 @@ variable in the request Authorization header or in query parameters.
 <
 
 Execute the request. Before accessing the protected resource, Kulala will open
-your default browser and send a request to the authorization server to obtain
-an access token.
+your default browser (or whatever is specified in `Browser CMD`) and send a
+request to the authorization server to obtain an access token.
 
 When prompted, complete the authentication process. The browser will be
 redirected to the provided `Redirect URL`.
 
-Kulala will intercept this redirect and extract the authorization details from
-the URL, if the provided Redirect URL is `localhost` or `127.0.0.1`. Otherwise,
-you need to manually copy the code from the redirect URL and paste it into
-Kulala prompt.
+If the provided `Redirect URL` is `localhost`/`127.0.0.1` or `Browser CMD` is
+specified, Kulala will start a HTTP server on `localhost`, listening on port
+specified in `Redirect URL` (or `8080`).
+
+The HTTP server will then intercept this redirect and extract the authorization
+details from the URL.
+
+Otherwise, you need to copy the code from the redirect URL and paste it into
+Kulala prompt manually.
 
 For Grant Type `Device Authorization`, the code will be copied into clipboard,
 to be pasted into consent form.
@@ -315,12 +366,14 @@ In an .http file, use the `$auth.idToken` variable, for example,
 
 USE CUSTOM AUTHENTICATION PARAMETERS
 
-Kulala provides an option to define custom request parameters that your
-authorization server may require. This includes, for example, resource and
+Kulala provides an option to define custom request headers and parameters that
+your authorization server may require. This includes, for example, resource and
 audience that extend the OAuth 2.0 Authorization framework.
 
-In your authentication configuration, add the `"Custom Request Parameters"`
-object.
+In your authentication configuration, you can add `Custom Headers` and `"Custom
+Request Parameters"` object.
+
+`Custom Headers` - is a simple header name - header value object.
 
 Inside `"Custom Request Parameters"`, enter your parameter name and value (a
 string or an array).
@@ -354,6 +407,11 @@ For example:
       },
     }
 <
+
+If you need to set custom curl flags for authentication requests, e.g.,
+`--insecure` to skip secure connection verification - you can do this with `#
+@curl-..` flags in your .http file `Shared` block or by setting
+`additional_curl_options` in Kulala’s config.
 
 
 AUTHENTICATION CONFIGURATION PARAMETERS
@@ -458,7 +516,7 @@ Method" (plain or S256) and "Code Verifier". For example:
 
 >json
     "PKCE": {
-        "Code Challenge Method": "Plain", 
+        "Code Challenge Method": "Plain",
         "Code Verifier": "YYLzIBzrXpVaH5KRx86itubKLXHNGnJBPAogEwkhveM"
     },
 <
@@ -479,7 +537,7 @@ For algorithm, `RS256` you also need to provide `private_key` in the
 `http-client.private.env.json` file, for `HS256` the `Client Secret` is used.
 
 Fields `exp` and `iat` are optional. If not provided, they will be calculated
-automatically.
+automatically (iat = current time, exp = iat + 50 seconds).
 
 >json
     "JWT": {
@@ -494,11 +552,50 @@ automatically.
     }
 <
 
+If you would like to build a JWT token manually or generate PKCE
+challenge/verifier , you can use built-in library in Lua request scripts:
+
+>lua
+    local crypto = require("kulala.cmd.crypto")
+    
+    ---@class JWTPayload
+    ---@field iss? string Issuer
+    ---@field sub? string Subject
+    ---@field scope? string Scope
+    ---@field aud? string Audience
+    ---@field exp? number Expiration time (in seconds since epoch)
+    ---@field iat? number Issued at (in seconds since epoch)
+    
+    ---Generate a JWT token
+    ---@param header {alg: string, typ: string} JWT header alg: "RS256"|"HS256", typ: "JWT"
+    ---@param payload JWTPayload JWT payload
+    ---@param key string Signing key
+    ---@return string|nil JWT token
+    M.jwt_encode = function(header, payload, key)
+    
+    ---Generate a random PKCE verifier
+    ---@return string|nil PKCE verifier
+    M.pkce_verifier = function()
+    
+    
+    ---Generate a PKCE challenge from the verifier
+    ---@param verifier string PKCE verifier
+    ---@param method string PKCE method "Plain"|"S256" (default: "S256")
+    ---@return string|nil PKCE challenge
+    M.pkce_challenge = function(verifier, method)
+<
+
 
 SCOPE
 
 A scope to limit an application’s access to a user’s account. Possible
 values depend on the service you are trying to access.
+
+
+EXPIRES IN
+
+If your auth provider does not return the `expires_in` field, a default value
+of `10` seconds will be set. Otherwise, you can specify it manually in seconds.
 
 
 ACQUIRE AUTOMATICALLY
@@ -522,9 +619,43 @@ The user’s password sent as part of authorization, used with the Password
 grant type.
 
 
+CUSTOM REQUEST HEADERS
+
+Specify custom request headers
+
+
 CUSTOM REQUEST PARAMETERS
 
 Specify custom request parameters
+
+
+BROWSER CMD
+
+Specify a shell command to open a browser/app to intercept `Redirect URL`.
+Accepts `Auth URL` and `Redirect URL` as postional arguments. By default opens
+the system default browser.
+
+
+EXAMPLE:
+
+In `lua/kulala/browser` you will find a working example of a custom
+Electron-based browser, that will open `Auth URL`, intercept `Redirect URL`
+(which does not have to point to localhost) and redirect the callback request
+to Kulala local HTTP server. To install Electron - `npm install -g electron`.
+
+Add to your Authentication configuration:
+
+>json
+    {
+     "Browser CMD": "browser.js http://localhost:8080/callback" (optional),
+    }
+<
+
+The browser script takes 2 arguments: the first is the `Auth URL` (passed by
+Kulala) and the second is the `Redirect URL` to which the intercepted request
+will be redirected. Both arguments are passed by Kulala, but if your `Redirect
+URL` does not point to localhost or does not have a port number, you have to
+specify `http://localhost:8080` manually as second argument in `Browser CMD`.
 
 
 AWS SIGNATURE V4       *kulala.authentication-authentication-aws-signature-v4*
@@ -573,6 +704,32 @@ Example:
       },
     }
 <
+
+
+DISABLE CERTIFICATE VERIFICATION*kulala.authentication-authentication-disable-certificate-verification*
+
+For development purposes, you may have a host with self-signed or expired
+certificates. If you trust this host, you can disable verification of its
+certificate.
+
+In the http-client.private.env.json file, add `verifyHostCertificate": false`
+to the SSLConfiguration object. For example:
+
+>json
+    {
+      "dev": {
+        "SSLConfiguration": {
+          "verifyHostCertificate": false
+        }
+      }
+    }
+<
+
+If you run a request with this environment, the certificate verification will
+be disabled.
+
+This is equivalent to setting `--insecure` flag in `additional_curl_options` in
+the config file or with `# @curl-insecure` in the request.
 
 Generated by panvimdoc <https://github.com/kdheepak/panvimdoc>
 

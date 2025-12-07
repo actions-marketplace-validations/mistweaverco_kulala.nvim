@@ -41,27 +41,16 @@ M.normalize_path = function(path)
 end
 
 ---Join paths -- similar to os.path.join in python
----@vararg string
----@return string
 M.join_paths = function(...)
-  if M.os == "windows" then
-    for _, v in ipairs({ ... }) do
-      -- if the path contains at least one forward slash,
-      -- then it needs to be converted to backslashes
-      if v:match("/") then
-        local parts = {}
-        for _, p in ipairs({ ... }) do
-          p = p:gsub("/", "\\")
-          table.insert(parts, p)
-        end
-        return table.concat(parts, M.ps)
-      end
-    end
+  local parts = { ... }
 
-    return table.concat({ ... }, M.ps)
+  if M.os == "windows" then
+    for i, part in ipairs(parts) do
+      parts[i] = part:gsub("/", "\\")
+    end
   end
 
-  return table.concat({ ... }, M.ps)
+  return table.concat(parts, M.ps)
 end
 
 ---Returns true if the path is absolute, false otherwise
@@ -111,8 +100,26 @@ M.find_file_in_parent_dirs = function(filename)
   })[1]
 end
 
+--- find all files with given name in parent directories, starting from the current buffer file path
+--- @param filename string
+--- @param root string|nil -- root marker, default {".git", ".gitignore"}
+--- @return string[]
+M.find_files_in_parent_dirs = function(filename, root)
+  local cwd = M.get_current_buffer_dir()
+  root = root or vim.fs.root(cwd, { ".git", ".gitignore" })
+  root = root and (root .. "/..") or "/"
+
+  return vim.fs.find(filename, {
+    path = cwd,
+    upward = true,
+    type = "file",
+    limit = math.huge,
+    stop = root,
+  })
+end
+
 M.copy_file = function(source, destination)
-  return vim.loop.fs_copyfile(source, destination, 0)
+  return vim.uv.fs_copyfile(source, destination, 0)
 end
 
 ---Get the current buffer directory or current working dir if path is not valid
@@ -151,23 +158,32 @@ M.get_dir_by_filepath = function(filepath)
   return vim.fn.fnamemodify(filepath, ":h")
 end
 
-M.find_all_http_files = function()
+---Get all http and rest files in given path or current buffer directory
+--- @param path string|nil
+M.find_all_http_files = function(path)
+  path = vim.fn.isdirectory(path) == 1 and path or M.get_current_buffer_dir()
+
   return vim.fs.find(function(name)
     return name:match("%.http$") or name:match("%.rest$")
-  end, { path = M.get_current_buffer_dir(), type = "file", limit = 1000 })
+  end, { path = path, type = "file", limit = 1000 })
 end
 
 -- Writes string to file
 --- @param filename string
 --- @param content string
 --- @param append boolean|nil
+--- @param binary boolean|nil
 --- @usage fs.write_file('Makefile', 'all: \n\t@echo "Hello World"')
 --- @usage fs.write_file('Makefile', 'all: \n\t@echo "Hello World"', true)
 --- @return boolean
 --- @usage local p = fs.write_file('Makefile', 'all: \n\t@echo "Hello World"')
-M.write_file = function(filename, content, append)
+M.write_file = function(filename, content, append, binary)
   local f, mode
+
   mode = append and "a" or "w"
+  mode = binary and mode .. "b" or mode
+
+  filename = M.get_file_path(filename)
 
   f = io.open(filename, mode)
   if not f then return false end
@@ -242,34 +258,34 @@ M.get_request_scripts_dir = function()
   return dir
 end
 
----Delete all files in a directory
+---Delete all files in a directory, except hidden files (starting with .)
 ---@param dir string
----@usage fs.delete_files_in_directory('tmp')
+---@param skip_files? string[]
 ---@return string[] deleted_files
-M.delete_files_in_directory = function(dir)
+M.delete_files_in_directory = function(dir, skip_files)
   local deleted_files = {}
   local scandir = vim.uv.fs_scandir(dir)
 
-  if scandir then
-    while true do
-      local name, type = vim.loop.fs_scandir_next(scandir)
+  if not scandir then
+    Logger.error("Error opening directory: " .. dir)
+    return {}
+  end
 
-      if not name then break end
+  while true do
+    local name, type = vim.uv.fs_scandir_next(scandir)
 
-      -- Only delete files, not directories except .*
-      if type == "file" and not name:match("^%.") then
-        local filepath = M.join_paths(dir, name)
-        local success, err = vim.uv.fs_unlink(filepath)
+    if not name then break end
 
-        if not success then
-          print("Error deleting file:", filepath, err)
-        else
-          table.insert(deleted_files, filepath)
-        end
+    if type == "file" and not name:match("^%.") and not vim.tbl_contains(skip_files or {}, name) then
+      local filepath = M.join_paths(dir, name)
+      local success, err = vim.uv.fs_unlink(filepath)
+
+      if not success then
+        Logger.error("Error deleting file: " .. filepath .. ": " .. err)
+      else
+        table.insert(deleted_files, filepath)
       end
     end
-  else
-    print("Error opening directory:", dir)
   end
 
   return deleted_files
@@ -320,7 +336,10 @@ end
 ---@param paths string[]
 ---@return string
 M.get_plugin_path = function(paths)
-  return M.get_plugin_root_dir() .. M.ps .. table.concat(paths, M.ps)
+  local root = M.get_plugin_root_dir()
+  root = paths and #paths > 0 and (root .. M.ps .. table.concat(paths, M.ps)) or root
+
+  return vim.fs.normalize(root)
 end
 
 ---Read a file with path absolute or relative to buffer dir
@@ -346,22 +365,29 @@ M.read_file = function(filename, is_binary)
   return content
 end
 
-M.read_json = function(filename)
+---Read JSON from file
+---@param filename string path absolute or relative to buffer dir
+---@param opts? table<{ verbose: boolean, luanil: table<{object: boolean, array: boolean }> }> -- verbose: log errors
+M.read_json = function(filename, opts)
   local content = M.read_file(filename)
-  return content and Json.parse(content)
+  content = content == "" and "{}" or content
+  return content and Json.parse(content, opts, filename)
 end
 
 ---Write JSON to file
 ---@param filename string
 ---@param data table
----@param format boolean|nil -- format the JSON with jq
----@param escape boolean|nil -- escape [/"]
-M.write_json = function(filename, data, format, escape)
+---@param format_opts table|boolean|nil -- {verbose|escape|sort}
+M.write_json = function(filename, data, format_opts)
+  data = next(data) and data or { _ = "" }
+
+  format_opts = format_opts and format_opts == true and {}
+  format_opts = format_opts and vim.tbl_extend("keep", format_opts, { escape = false })
+
   local content = vim.json.encode(data)
   if not content then return end
 
-  content = format and Json.format(content) or content
-  content = escape == true and content or content:gsub("\\/", "/"):gsub('\\"', '"')
+  content = format_opts and require("kulala.formatter").json(content, format_opts) or content
 
   return M.write_file(filename, content)
 end
@@ -408,6 +434,8 @@ end
 ---@param file file* handle to file to append to
 ---@param path string path of file to include
 M.include_file = function(file, path)
+  path = M.get_file_path(path)
+
   local status = true
   local BUFSIZE = 2 ^ 13 -- 8K
 
@@ -425,24 +453,24 @@ M.include_file = function(file, path)
 end
 
 --- Delete *.js request script files and request_variables.json
-M.delete_request_scripts_files = function() -- cache/nvim/kulala/scripts/requests
+M.delete_request_scripts_files = function() -- .cache/nvim/kulala/scripts/requests
   local dir = M.get_request_scripts_dir()
   M.delete_files_in_directory(dir)
 end
 
----Deletes all cached files, request scripts and variables
----except global_variables.json in cache/nvim/kulala/scripts
-M.delete_cached_files = function(silent) -- cache/nvim/kulala
+---Deletes cached files: request.json and script output
+M.delete_cached_files = function(silent) -- .cache/nvim/kulala
   local tmp_dir = M.get_plugin_tmp_dir()
-  local deleted_files = M.delete_files_in_directory(tmp_dir)
+  local skip_files = { "cookies.txt" }
+  local deleted_files = M.delete_files_in_directory(tmp_dir, skip_files)
 
-  --TODO: delete global_variables.json ?
+  if silent then return end
 
-  local list = vim.iter(deleted_files):fold("", function(list, file)
-    return list .. "- " .. file .. "\n"
+  local list = vim.iter(deleted_files):fold("", function(acc, file)
+    return acc .. "- " .. file .. "\n"
   end)
 
-  if not silent then Logger.info("Deleted files:\n" .. list) end
+  Logger.info("Deleted files:\n" .. list)
 end
 
 return M

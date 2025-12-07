@@ -19,7 +19,7 @@ end
 describe("requests", function()
   describe("show output of requests", function()
     local curl, system, wait_for_requests
-    local input, notify, dynamic_vars
+    local input, output, notify, dynamic_vars
     local result, expected, ui_buf
 
     teardown(function()
@@ -30,10 +30,11 @@ describe("requests", function()
       h.delete_all_bufs()
 
       input = h.Input.stub()
+      output = h.Output.stub()
       notify = h.Notify.stub()
       dynamic_vars = h.Dynamic_vars.stub()
 
-      curl = h.Curl.stub({
+      curl = h.Curl.stub {
         ["*"] = {
           stats = h.load_fixture("fixtures/stats.json"),
           headers = h.load_fixture("fixtures/request_2_headers.txt"),
@@ -46,7 +47,7 @@ describe("requests", function()
           body = h.load_fixture("fixtures/request_2_body.txt"),
           errors = h.load_fixture("fixtures/request_2_errors.txt"),
         },
-      })
+      }
 
       system = h.System.stub({ "curl" }, {
         on_call = function(system)
@@ -61,11 +62,11 @@ describe("requests", function()
         end)
       end
 
-      kulala_config = CONFIG.setup({
+      kulala_config = CONFIG.setup {
         default_view = "body",
         display_mode = "split",
         debug = true,
-      })
+      }
     end)
 
     after_each(function()
@@ -73,18 +74,19 @@ describe("requests", function()
       curl.reset()
       system.reset()
       input.reset()
+      output.reset()
       notify.reset()
       dynamic_vars.reset()
     end)
 
-    it("it substitues document variables and does authorization", function()
+    it("it substitutes document variables and does authorization", function()
       vim.cmd.edit(h.expand_path("requests/simple.http"))
 
-      curl.stub({
+      curl.stub {
         ["https://httpbin.org/simple"] = {
           body = h.load_fixture("fixtures/simple_body.txt"),
         },
-      })
+      }
 
       kulala.run()
       wait_for_requests(1)
@@ -104,27 +106,28 @@ describe("requests", function()
     it("sets env variable with @env-stdin-cmd", function()
       vim.cmd.edit(h.expand_path("requests/chain.http"))
 
-      curl.stub({
+      curl.stub {
         ["https://httpbin.org/chain_1"] = {
           body = h.load_fixture("fixtures/chain_1_body.txt"),
         },
         ["https://httpbin.org/chain_2"] = {
           body = h.load_fixture("fixtures/chain_2_body.txt"),
         },
-      })
+      }
 
       kulala.run_all()
       wait_for_requests(2)
 
-      local expected_request = h.load_fixture("fixtures/chain_2_request.txt"):to_object().current_request
-      local computed_request = DB.data.current_request
+      local computed_request = DB.data.current_request.body
+      computed_request = vim.json.decode(computed_request)
 
       expected = h.load_fixture("fixtures/chain_2_body.txt")
-      result = h.get_buf_lines(ui_buf):to_string()
 
-      assert.is_same(expected_request.body_computed, computed_request.body_computed)
-      assert.is_same(2, curl.requests_no)
-      assert.has_string(result, expected)
+      assert.has_properties(computed_request, {
+        cmd = "pre_var_value",
+        context = "Some context",
+        success = true,
+      })
     end)
 
     it("filters response with @jq", function()
@@ -136,11 +139,11 @@ describe("requests", function()
         "test.http"
       )
 
-      curl.stub({
+      curl.stub {
         ["https://httpbin.org/simple"] = {
           body = h.load_fixture("fixtures/simple_body.txt"),
         },
-      })
+      }
 
       kulala.run_all()
       wait_for_requests(1)
@@ -158,14 +161,14 @@ describe("requests", function()
     it("sets environment variables from response", function()
       vim.cmd.edit(h.expand_path("requests/advanced_A.http"))
 
-      curl.stub({
+      curl.stub {
         ["https://httpbin.org/advanced_1"] = {
           body = h.load_fixture("fixtures/advanced_A_1_body.txt"),
         },
         ["https://httpbin.org/advanced_2"] = {
           body = h.load_fixture("fixtures/advanced_A_2_body.txt"),
         },
-      })
+      }
 
       kulala.run_all()
       wait_for_requests(2)
@@ -184,11 +187,11 @@ describe("requests", function()
     it("substitutes http.client.json variables, accesses request/response from js and logs to client", function()
       vim.cmd.edit(h.expand_path("requests/advanced_B.http"))
 
-      curl.stub({
+      curl.stub {
         ["https://httpbin.org/advanced_b"] = {
           body = h.load_fixture("fixtures/advanced_B_body.txt"),
         },
-      })
+      }
 
       kulala.run_all()
       wait_for_requests(1)
@@ -202,19 +205,19 @@ describe("requests", function()
       assert.is_same(expected_request.headers, computed_request.headers)
       assert.is_same(expected_request.body_computed, computed_request.body_computed)
       assert.has_string(result, expected)
-      assert.has_string(notify.messages, "Foobar")
-      assert.has_string(notify.messages, "Thu, 30 Jan 2025 16:21:56 GMT")
+      assert.has_string(output.log, "Foobar")
+      assert.has_string(output.log, "Thu, 30 Jan 2025 16:21:56 GMT")
     end)
 
     it("prompts for vars, computes request vars, logs to client", function()
       vim.cmd.edit(h.expand_path("requests/advanced_D.http"))
 
-      input.stub({ ["Password prompt"] = "TEST_PASSWORD" })
-      curl.stub({
+      input.stub { ["Password prompt"] = "TEST_PASSWORD" }
+      curl.stub {
         ["https://httpbin.org/advanced_d"] = {
           body = h.load_fixture("fixtures/advanced_D_body.txt"),
         },
-      })
+      }
 
       kulala.run_all()
       wait_for_requests(1)
@@ -227,21 +230,21 @@ describe("requests", function()
 
       assert.is_same(expected_request.headers, computed_request.headers)
       assert.is_same(expected_request.body_computed, computed_request.body_computed)
-      assert.has_string(notify.messages, "Content-Type:application/json")
-      assert.has_string(notify.messages, "{ someHeaderValue: 'gunicorn/19.9.0' }")
+      assert.has_string(output.log, "Content-Type:application/json")
+      assert.has_string(output.log, "{ someHeaderValue: 'gunicorn/19.9.0' }")
       assert.has_string(result, expected)
     end)
 
     it("has access to request and response data through request variables", function()
       vim.cmd.edit(h.expand_path("requests/advanced_F.http"))
 
-      curl.stub({
+      curl.stub {
         ["*"] = {
           headers = h.load_fixture("fixtures/advanced_F_headers.txt"),
           body = h.load_fixture("fixtures/advanced_F_body.txt"),
           cookies = h.load_fixture("fixtures/cookies.txt"),
         },
-      })
+      }
 
       kulala.run_all()
       wait_for_requests(2)
@@ -260,8 +263,8 @@ describe("requests", function()
     it("makes named requests, prompts for vars, uses scripts, uses env json", function()
       vim.cmd.edit(h.expand_path("requests/advanced_E.http"))
 
-      input.stub({ ["PROMPT_VAR prompt"] = "TEST_PROMPT_VAR" })
-      curl.stub({
+      input.stub { ["PROMPT_VAR prompt"] = "TEST_PROMPT_VAR" }
+      curl.stub {
         ["*"] = {
           headers = h.load_fixture("fixtures/advanced_E_headers.txt"),
         },
@@ -274,7 +277,7 @@ describe("requests", function()
         ["https://httpbin.org/advanced_e3"] = {
           body = h.load_fixture("fixtures/advanced_E3_body.txt"),
         },
-      })
+      }
 
       kulala.run_all()
       wait_for_requests(3)
@@ -292,7 +295,7 @@ describe("requests", function()
 
     it("skips request conditionally", function()
       kulala_config.halt_on_error = false
-      curl.stub({ ["*"] = { body = '{ "foo": "bar" }' } })
+      curl.stub { ["*"] = { body = '{ "foo": "bar" }' } }
 
       h.create_buf(
         ([[
@@ -320,15 +323,15 @@ describe("requests", function()
     end)
 
     it("replays request conditionally", function()
-      curl.stub({
+      curl.stub {
         ["http://localhost:3001/request_1"] = { headers = "HTTP/2 500" },
         ["http://localhost:3001/request_2"] = { headers = "HTTP/2 200" },
-      })
+      }
 
       h.create_buf(
         ([[
           < {%
-            request.variables.set("URL", "request_1");
+            if (!request.variables.get("URL")) { request.variables.set("URL", "request_1"); }
           %}
           GET http://localhost:3001/{{URL}}
 
@@ -358,7 +361,7 @@ describe("requests", function()
 
       local last_result = "none"
       local assert_chunk = function(system, errors, chunk, expected)
-        curl.stub({ ["*"] = { body = chunk } })
+        curl.stub { ["*"] = { body = chunk } }
         curl.request(system)
 
         system.args.opts.stderr(_, errors)
@@ -401,15 +404,46 @@ describe("requests", function()
       assert.has_string(result, expected)
     end)
 
-    it("downloads GraphQL schema", function()
-      curl.stub({
-        ["https://countries.trevorblades.com"] = {
-          body = h.load_fixture("fixtures/graphql_schema_body.txt"),
+    it("does not show big size responses", function()
+      curl.stub {
+        ["https://httpbin.org/big_response"] = {
+          body = "BIG SIZE RESPONSE",
         },
-      })
+      }
 
       h.create_buf(
         ([[
+          POST https://httpbin.org/big_response
+      ]]):to_table(true),
+        "test.http"
+      )
+
+      stub(vim.fn, "getfsize", function()
+        return 65536 -- 64Kb
+      end)
+
+      kulala.run()
+      wait_for_requests(1)
+
+      vim.fn.getfsize:revert()
+
+      expected = "The size of response is > 32Kb.\nPath to response: " .. GLOBALS.BODY_FILE
+      result = h.get_buf_lines(ui_buf):to_string()
+
+      assert.has_string(result, expected)
+    end)
+
+    it("downloads GraphQL schema", function()
+      curl.stub {
+        ["https://countries.trevorblades.com"] = {
+          body = h.load_fixture("fixtures/graphql_schema_body.txt"),
+        },
+      }
+
+      h.create_buf(
+        ([[
+          ### Countries
+
           POST https://countries.trevorblades.com
           X-REQUEST-TYPE: GraphQL
 
@@ -426,6 +460,7 @@ describe("requests", function()
         "test.http"
       )
 
+      vim.fn.setpos(".", { 0, 2, 1 })
       kulala.download_graphql_schema()
 
       system:wait(2000, function()
@@ -438,17 +473,45 @@ describe("requests", function()
       end, { predicate = true }))
 
       expected = h.load_fixture("fixtures/graphql_schema_body.txt")
-      result = h.load_fixture(vim.uv.cwd() .. "/test.graphql-schema.json")
+      result = h.load_fixture(vim.uv.cwd() .. "/countries.trevorblades.com.graphql-schema.json")
 
       assert.has_string(result, expected)
     end)
 
-    it("parses GraphQL request", function()
-      curl.stub({
+    it("downloads GraphQL schema with cookies", function()
+      -- Stub the curl response
+      curl.stub {
         ["https://countries.trevorblades.com"] = {
           body = h.load_fixture("fixtures/graphql_schema_body.txt"),
         },
-      })
+      }
+
+      -- Create a GraphQL request with Cookie header
+      h.create_buf(
+        ([[
+           POST https://countries.trevorblades.com
+           X-REQUEST-TYPE: GraphQL
+           Cookie: session_id=abc123
+
+           query { __schema { types { name } } }
+         ]]):to_table(true),
+        "test.http"
+      )
+
+      kulala.download_graphql_schema()
+
+      -- Wait and verify the command includes --cookie flag
+      local request_cmd = system.args.cmd
+      assert.is_true(vim.tbl_contains(request_cmd, "--cookie"))
+      assert.is_true(vim.tbl_contains(request_cmd, "session_id=abc123"))
+    end)
+
+    it("parses GraphQL request", function()
+      curl.stub {
+        ["https://countries.trevorblades.com"] = {
+          body = h.load_fixture("fixtures/graphql_schema_body.txt"),
+        },
+      }
 
       h.create_buf(
         ([[
@@ -478,11 +541,11 @@ describe("requests", function()
     end)
 
     it("runs GraphQL request method", function()
-      curl.stub({
+      curl.stub {
         ["https://countries.trevorblades.com"] = {
           body = h.load_fixture("fixtures/graphql_schema_body.txt"),
         },
-      })
+      }
 
       h.create_buf(
         ([[
@@ -504,18 +567,23 @@ describe("requests", function()
       kulala.run()
       wait_for_requests(1)
 
-      local request_body_computed = DB.data.current_request.body_computed
+      local request = DB.data.current_request
 
-      assert.has_string(request_body_computed, '"query":"query Person($id: ID) { person(personID: $id) { name } }')
-      assert.has_string(request_body_computed, '"variables":{"id":1}')
+      assert.is_same("POST", request.method)
+      assert.has_properties(request.headers, {
+        ["Content-Type"] = "application/json",
+      })
+
+      assert.has_string(request.body_computed, '"query":"query Person($id: ID) { person(personID: $id) { name } }')
+      assert.has_string(request.body_computed, '"variables":{"id":1}')
     end)
 
     it("runs API callbacks", function()
-      curl.stub({
+      curl.stub {
         ["https://httpbin.org/simple"] = {
           body = h.load_fixture("fixtures/simple_body.txt"),
         },
-      })
+      }
 
       h.create_buf(([[ GET https://httpbin.org/simple ]]):to_table(true), "test.http")
       local cb_result = ""
@@ -550,7 +618,7 @@ describe("requests", function()
 
     describe("it runs lua scripts", function()
       it("runs inline scripts", function()
-        curl.stub({ ["*"] = { body = "{}" } })
+        curl.stub { ["*"] = { body = "{}" } }
 
         h.create_buf(
           ([[
@@ -582,7 +650,7 @@ describe("requests", function()
       end)
 
       it("runs file scripts", function()
-        curl.stub({ ["*"] = { body = "{}" } })
+        curl.stub { ["*"] = { body = "{}" } }
 
         h.create_buf(
           ([[
@@ -613,11 +681,11 @@ describe("requests", function()
         kulala_config.debug = true
 
         curl.reset()
-        curl.stub({
+        curl.stub {
           ["https://request_2"] = {
             body = h.load_fixture("fixtures/request_1_body.txt"),
           },
-        })
+        }
 
         h.create_buf(
           ([[
@@ -633,11 +701,11 @@ describe("requests", function()
       end)
 
       it("it halts on command error", function()
-        curl.stub({
+        curl.stub {
           ["https://request_1"] = {
             code = 124,
           },
-        })
+        }
 
         kulala.run_all()
         wait_for_requests(2)
@@ -650,11 +718,11 @@ describe("requests", function()
       it("it halts on response error", function()
         kulala_config.halt_on_error = true
 
-        curl.stub({
+        curl.stub {
           ["https://request_1"] = {
             stats = '{ "response_code": 500 }',
           },
-        })
+        }
 
         kulala.run_all()
         wait_for_requests(2)
@@ -667,11 +735,11 @@ describe("requests", function()
       it("it halts on assert error", function()
         kulala_config.halt_on_error = true
 
-        curl.stub({
+        curl.stub {
           ["https://request_1"] = {
-            boby = '{ "data": { "foo": "baz" } }',
+            body = '{ "data": { "foo": "baz" } }',
           },
-        })
+        }
 
         h.delete_all_bufs()
         h.create_buf(
@@ -699,6 +767,318 @@ describe("requests", function()
         result = h.get_buf_lines(ui_buf):to_string()
         assert.has_string(result, "Request: 2/2")
         assert.has_string(result, "Assert: failed")
+      end)
+    end)
+
+    describe("shared request block", function()
+      local output
+
+      before_each(function()
+        curl.stub { ["*"] = { body = '{ "json": { "document_var": "var"} }' } }
+        output = h.Output.stub()
+
+        h.create_buf(
+          ([[
+            ### Shared
+
+            @shared_var_1 = shared_value_1
+            @shared_var_2 = shared_value_2
+
+            # @curl-connect-timeout 20
+            # @curl-location
+
+            < {%
+              console.log("pre request 0")
+            %}
+
+            < ./tests/functional/scripts/advanced_E_pre.js
+
+            POST https://httpbin.org/0
+            Content-Type: application/json
+            Origin: some-origin
+
+            > {%
+              console.log("post request 0")
+            %}
+
+            > ./tests/functional/scripts/advanced_E_post.js
+
+            ### request 1
+
+            @shared_var_2 = local_value_2
+            @local_var_1 = local_value_1
+
+            # @curl-connect-timeout 10
+            # @curl-v
+
+            < {%
+              console.log("pre request 1")
+            %}
+
+            < ./tests/functional/scripts/advanced_E_pre.js
+
+            POST https://httpbin.org/1
+            Content-Type: application/json
+
+            > {%
+              console.log("post request 1")
+            %}
+
+            > ./tests/functional/scripts/advanced_E_post.js
+
+            ### request 2
+
+            @shared_var_2 = local_value_2
+            @local_var_2 = local_value_2
+
+            # @curl-data-urlencode
+
+            < {%
+              console.log("pre request 2")
+            %}
+
+            < ./tests/functional/scripts/advanced_E_pre.js
+
+            POST https://httpbin.org/2
+            Content-Type: application/json
+
+            > {%
+              console.log("post request 2")
+            %}
+
+            > ./tests/functional/scripts/advanced_E_post.js
+          ]]):to_table(true),
+          "test.http"
+        )
+      end)
+
+      after_each(function()
+        output.reset()
+      end)
+
+      it("runs all requests with shared block - once", function()
+        kulala.run_all()
+        wait_for_requests(3)
+
+        assert.is_same(3, curl.requests_no)
+
+        assert.is_same("https://httpbin.org/0", curl.requests[1])
+        assert.is_same("https://httpbin.org/1", curl.requests[2])
+        assert.is_same("https://httpbin.org/2", curl.requests[3])
+        assert.is_same({
+          "pre request 0\n",
+          "JS: PRE TEST\n",
+          "post request 0\n",
+          "JS: POST TEST\n",
+          "pre request 1\n",
+          "JS: PRE TEST\n",
+          "post request 1\n",
+          "JS: POST TEST\n",
+          "pre request 2\n",
+          "JS: PRE TEST\n",
+          "post request 2\n",
+          "JS: POST TEST\n",
+        }, output.log)
+      end)
+
+      it("runs all requests with shared block - each", function()
+        h.delete_all_bufs()
+        h.create_buf(
+          ([[
+            ### Shared each
+
+            POST https://httpbin.org/0
+
+            ### request 1
+
+            POST https://httpbin.org/1
+
+            ### request 2
+
+            POST https://httpbin.org/2
+          ]]):to_table(true),
+          "test.http"
+        )
+
+        kulala.run_all()
+        wait_for_requests(4)
+
+        assert.is_same(4, curl.requests_no)
+        assert.has_properties(curl.requests, {
+          "https://httpbin.org/0",
+          "https://httpbin.org/1",
+          "https://httpbin.org/0",
+          "https://httpbin.org/2",
+        })
+      end)
+
+      it("executes shared request before each document request ", function()
+        h.send_keys("25j") -- request 1
+
+        kulala.run()
+        wait_for_requests(2)
+
+        assert.is_same(2, curl.requests_no)
+        assert.is_same("https://httpbin.org/0", curl.requests[1])
+        assert.is_same("https://httpbin.org/1", curl.requests[2])
+        assert.is_same({
+          "pre request 0\n",
+          "JS: PRE TEST\n",
+          "post request 0\n",
+          "JS: POST TEST\n",
+          "pre request 1\n",
+          "JS: PRE TEST\n",
+          "post request 1\n",
+          "JS: POST TEST\n",
+        }, output.log)
+
+        curl.requests = {}
+        curl.requests_no = 0
+        output.log = {}
+
+        h.send_keys("50j") -- request 2
+        kulala.run()
+        wait_for_requests(2)
+
+        assert.is_same(2, curl.requests_no)
+        assert.is_same("https://httpbin.org/0", curl.requests[1])
+        assert.is_same("https://httpbin.org/2", curl.requests[2])
+        assert.is_same({
+          "pre request 0\n",
+          "JS: PRE TEST\n",
+          "post request 0\n",
+          "JS: POST TEST\n",
+          "pre request 2\n",
+          "JS: PRE TEST\n",
+          "post request 2\n",
+          "JS: POST TEST\n",
+        }, output.log)
+      end)
+
+      describe("executes shared block without url", function()
+        it("with pre_request script", function()
+          h.delete_all_bufs()
+
+          h.create_buf(
+            ([[
+            ### Shared
+            < {%
+              console.log("pre request 0")
+            %}
+
+            < ./tests/functional/scripts/advanced_E_pre.js
+
+            ### request 1
+
+            POST https://httpbin.org/1
+          ]]):to_table(true),
+            "test.http"
+          )
+
+          h.send_keys("8j") -- request 1
+
+          kulala.run()
+          wait_for_requests(1)
+
+          assert.is_same({
+            "pre request 0\n",
+            "JS: PRE TEST\n",
+          }, output.log)
+        end)
+
+        it("with nested requests", function()
+          h.delete_all_bufs()
+
+          h.create_buf(
+            ([[
+            ### Shared
+
+            run ./tests/functional/requests/simple.http
+
+            ### request 1
+
+            POST https://httpbin.org/1
+          ]]):to_table(true),
+            "test.http"
+          )
+
+          h.send_keys("8j") -- request 1
+
+          kulala.run()
+          wait_for_requests(2)
+
+          assert.has_properties(curl.requests, {
+            "https://httpbin.org/simple",
+            "https://httpbin.org/1",
+          })
+        end)
+      end)
+
+      it("applies shared variables, metadata, headers, scope request", function()
+        CONFIG.options.variables_scope = "request"
+        h.send_keys("50j") -- request 2
+
+        kulala.run()
+        wait_for_requests(2)
+
+        CONFIG.options.variables_scope = "document"
+
+        result = DB.data.current_request
+        assert.has_properties(result.shared.variables, {
+          shared_var_1 = "shared_value_1",
+          shared_var_2 = "shared_value_2",
+        })
+        assert.has_properties(result.variables, {
+          local_var_2 = "local_value_2",
+          shared_var_1 = "shared_value_1",
+          shared_var_2 = "local_value_2",
+        })
+        assert.has_properties(result.headers, {
+          ["Content-Type"] = "application/json",
+        })
+        assert.has_properties(result.environment, {
+          local_var_2 = "local_value_2",
+          shared_var_1 = "shared_value_1",
+          shared_var_2 = "local_value_2",
+        })
+        assert.has_properties(result.metadata, {
+          { name = "curl-data-urlencode", value = "" },
+          { name = "curl-connect-timeout", value = "20" },
+          { name = "curl-location", value = "" },
+        })
+      end)
+
+      it("applies headers and post_request scripts with NOP request", function()
+        h.delete_all_bufs()
+
+        h.create_buf(
+          ([[
+            ### Shared
+            NOP
+            Origin: some-origin
+
+            > {%
+              console.log("post request 0")
+            %}
+
+            > ./tests/functional/scripts/advanced_E_pre.js
+
+            ### request 1
+
+            POST https://httpbin.org/1
+          ]]):to_table(true),
+          "test.http"
+        )
+
+        h.send_keys("12j")
+
+        kulala.run()
+        wait_for_requests(1)
+
+        assert.is_same({
+          "post request 0\n",
+          "JS: PRE TEST\n",
+        }, output.log)
       end)
     end)
   end)

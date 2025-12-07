@@ -8,7 +8,10 @@
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/mistweaverco/kulala.nvim?style=for-the-badge)](https://github.com/mistweaverco/kulala.nvim/releases/latest)
 [![Discord](assets/badge-discord.svg)](https://discord.gg/QyVQmfY4Rt)
 
-[Requirements](https://neovim.getkulala.net/docs/getting-started/requirements) • [Install](#install) • [Usage](https://neovim.getkulala.net/docs/usage) • [HTTP File Spec](https://neovim.getkulala.net/docs/usage/http-file-spec)
+[![Main status](https://img.shields.io/github/actions/workflow/status/mistweaverco/kulala.nvim/tests.yml?label=main&branch=main&style=for-the-badge)](https://github.com/mistweaverco/kulala.nvim/actions/workflows/tests.yml)
+[![Develop status](https://img.shields.io/github/actions/workflow/status/mistweaverco/kulala.nvim/tests.yml?branch=develop&label=develop&style=for-the-badge)](https://github.com/mistweaverco/kulala.nvim/actions/workflows/tests.yml)
+
+[Requirements](https://neovim.getkulala.net/docs/getting-started/requirements) • [Install](#install) • [Usage](https://neovim.getkulala.net/docs/usage) • [HTTP File Spec](https://neovim.getkulala.net/docs/usage/http-file-spec) • [Kulala GH Action](https://github.com/mistweaverco/kulala-github-action)
 
 <p></p>
 
@@ -46,17 +49,22 @@ Assertions, automated testing and reporting
 
 Built-in LSP completion and formatting
 
+Import/export to/from Postman, OpenAPI, Bruno
+
 CLI tooling and CI hooks
 
 Scratchpad: for making requests
 
+100% Compatibility with IntelliJ HTTP Client
 
-#### Together with [Kulala Language Server](https://github.com/mistweaverco/kulala-ls) and [Kulala Formatter](https://github.com/mistweaverco/kulala-fmt), Kulala aims to provide the best REST Client experience on the web without leaving your favourite editor!
+# •
 
+Together with our standalone products [Kulala Language Server](https://github.com/mistweaverco/kulala-ls) and [Kulala Formatter](https://github.com/mistweaverco/kulala-fmt), we aim to provide the best REST Client experience on the web without leaving your favourite editor!
 
-#### We love feature requests and feedback, so if you have any ideas or suggestions, please let us know!  
+# ••
 
-#### We will be happy to implement them ❤️
+Kulala team loves feature requests and feedback, so if you have any ideas or suggestions, please let us know!  
+We will be happy to implement them ❤️
 
 </div>
 
@@ -82,15 +90,13 @@ require("lazy").setup({
     },
     ft = {"http", "rest"},
     opts = {
-      -- your configuration comes here
       global_keymaps = false,
+      global_keymaps_prefix = "<leader>R",
+      kulala_keymaps_prefix = "",
     },
   },
 })
 ```
-
-> [!WARNING]
->`opts` needs to be at least an empty table `{}` and can't be completely omitted.
 
 > [!NOTE]
 > By default global keymaps are disabled, change to `global_keymaps = true` to get a complete set of key mappings for Kulala. Check the [keymaps documentation](https://neovim.getkulala.net/docs/getting-started/keymaps) for details.
@@ -107,10 +113,6 @@ This project was heavily inspired by the idea of having a REST client in Neovim.
 
 The actual state of [rest.nvim](https://github.com/rest-nvim/rest.nvim)
 as archived kicked off the development of kulala.nvim.
-
-> [!NOTE]
-> The project has been [un-archived][restnvim-unarchived-post] again,
-> so check it out if you're looking for an alternative.
 
 ### curl.nvim
 

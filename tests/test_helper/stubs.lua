@@ -107,7 +107,7 @@ end
 
 Output.spy = function()
   Output._spy = true
-  Output.stub()
+  return Output.stub()
 end
 
 Output.stub = function()
@@ -130,7 +130,7 @@ end
 
 Output.run = function(f, ...)
   _ = Output._spy and Output[f](...)
-  for _, c in ipairs({ ... }) do
+  for _, c in ipairs { ... } do
     _ = not c:match("^\n+$") and table.insert(Output.log, c)
   end
 end

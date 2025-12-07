@@ -22,6 +22,11 @@ local M = {
   -- enable reading vscode rest client environment variables
   vscode_rest_client_environmentvars = false,
 
+  -- set variable scope:  document or request
+  variables_scope = "document", ---@type "document"|"request"
+  -- define your own dynamic variables here, e.g. $randomEmail
+  custom_dynamic_variables = {}, ---@type { [string]: fun():string }
+
   -- default timeout for the request, set to nil to disable
   request_timeout = nil,
   -- continue running requests when a request failure is encountered
@@ -29,9 +34,22 @@ local M = {
 
   -- certificates
   certificates = {},
+
   -- Specify how to escape query parameters
   -- possible values: always, skipencoded = keep %xx as is
   urlencode = "always",
+
+  -- skip urlencoding characters, specified as lua regex pattern, e.g. "%[%]"
+  urlencode_skip = "",
+
+  -- force urlencoding characters, specified as lua regex pattern, e.g. "%[%]"
+  urlencode_force = "",
+
+  -- write cookies to cookie jar one response
+  write_cookies = true,
+
+  -- Infer content type from the body and add it to the request headers
+  infer_content_type = true,
 
   -- default formatters/pathresolver for different content types
   contenttypes = {
@@ -42,6 +60,22 @@ local M = {
         return require("kulala.parser.jsonpath").parse(...)
       end,
     },
+    ["application/graphql"] = {
+      ft = "graphql",
+      formatter = vim.fn.executable("prettier") == 1 and { "prettier", "--stdin-filepath", "file.graphql" },
+      pathresolver = nil,
+    },
+    ["application/javascript"] = {
+      ft = "javascript",
+      formatter = vim.fn.executable("prettier") == 1 and { "prettier", "--stdin-filepath", "file.js" },
+      pathresolver = nil,
+    },
+    ["application/lua"] = {
+      ft = "lua",
+      formatter = vim.fn.executable("stylua") == 1 and { "stylua", "-" },
+      pathresolver = nil,
+    },
+    ["application/graphql-response+json"] = "application/json",
     ["application/xml"] = {
       ft = "xml",
       formatter = vim.fn.executable("xmllint") == 1 and { "xmllint", "--format", "-" },
@@ -49,9 +83,20 @@ local M = {
     },
     ["text/html"] = {
       ft = "html",
-      formatter = vim.fn.executable("xmllint") == 1 and { "xmllint", "--format", "--html", "-" },
+      formatter = vim.fn.executable("prettier") == 1 and { "prettier", "--stdin-filepath", "file.html" },
       pathresolver = nil,
     },
+  },
+
+  -- format json response when redirecting to file
+  format_json_on_redirect = true,
+
+  -- enable/disable/customize before_request hook.  Default hook is request highlight.
+  before_request = true, ---@type boolean|fun(request: DocumentRequest):boolean - return true to continue request execution, false to stop
+
+  scripts = {
+    -- resolves "NODE_PATH" environment variable for node scripts. Defaults to the first "node_modules" directory found upwards from "script_file_dir".
+    node_path_resolver = nil, ---@type fun(http_file_dir: string, script_file_dir: string, script_data: ScriptData): string|nil
   },
 
   ui = {
@@ -59,15 +104,28 @@ local M = {
     display_mode = "split",
     -- split direction: possible values: "vertical", "horizontal"
     split_direction = "vertical",
-    -- window options to override defaults: width/height/split/vertical
-    win_opts = {},
+    -- window options to override win_config: width/height/split/vertical.., buffer/window options
+    win_opts = { bo = {}, wo = {} }, ---@type kulala.ui.win_config
     -- default view: "body" or "headers" or "headers_body" or "verbose" or fun(response: Response)
-    default_view = "body",
+    default_view = "body", ---@type "body"|"headers"|"headers_body"|"verbose"|fun(response: Response)
     -- enable winbar
     winbar = true,
     -- Specify the panes to be displayed by default
-    -- Current available pane contains { "body", "headers", "headers_body", "script_output", "stats", "verbose", "report", "help" },
+    -- Available panes are { "body", "headers", "headers_body", "script_output", "stats", "verbose", "report", "help" },
     default_winbar_panes = { "body", "headers", "headers_body", "verbose", "script_output", "report", "help" },
+    -- Winbar labels
+    winbar_labels = {
+      body = "Body",
+      headers = "Headers",
+      headers_body = "All",
+      verbose = "Verbose",
+      script_output = "Script Output",
+      stats = "Stats",
+      report = "Report",
+      help = "Help",
+    },
+    -- show/hide winbar keymaps in labels
+    winbar_labels_keymaps = true,
     -- enable/disable variable info text
     -- this will show the variable name and value as float
     -- possible values: false, "float"
@@ -78,17 +136,38 @@ local M = {
     icons = {
       inlay = {
         loading = "⏳",
-        done = "✅",
-        error = "❌",
+        done = "✔",
+        error = "✘",
       },
       lualine = "🐼",
       textHighlight = "WarningMsg", -- highlight group for request elapsed time
+      loadingHighlight = "Normal",
+      doneHighlight = "String",
+      errorHighlight = "ErrorMsg",
+    },
+
+    -- highlight groups for http syntax highlighting
+    ---@type table<string, string|vim.api.keyset.highlight>
+    syntax_hl = {
+      ["@punctuation.bracket.kulala_http"] = "Number",
+      ["@character.special.kulala_http"] = "Special",
+      ["@operator.kulala_http"] = "Special",
+      ["@variable.kulala_http"] = "String",
+      ["@redirect_path.kulala_http"] = "Number",
+      ["@external_body_path.kulala_http"] = "String",
+      ["@query_param.name.kulala_http"] = "Number",
+      ["@query_param.value.kulala_http"] = "String",
+      ["@form_param_name.kulala_http"] = "Number",
+      ["@form_param_value.kulala_http"] = "String",
     },
 
     -- enable/disable request summary in the output window
     show_request_summary = true,
     -- disable notifications of script output
     disable_script_print_output = false,
+
+    -- do not show responses over maximum size, in bytes
+    max_response_size = 32768,
 
     report = {
       -- possible values: true | false | "on_error"
@@ -119,12 +198,6 @@ local M = {
 
     disable_news_popup = false,
 
-    -- enable/disable built-in autocompletion
-    autocomplete = true,
-
-    -- enable/disable HTTP formatter
-    formatter = false,
-
     -- enable/disable lua syntax highlighting
     lua_syntax_hl = true,
 
@@ -148,8 +221,37 @@ local M = {
     },
   },
 
+  lsp = {
+    -- enable/disable built-in LSP server
+    enable = true,
+
+    -- filetypes to attach Kulala LSP to
+    filetypes = { "http", "rest", "json", "yaml", "bruno" },
+
+    --enable/disable/customize  LSP keymaps
+    ---@type boolean|table
+    keymaps = false, -- disabled by default, as Kulala relies on default Neovim LSP keymaps
+
+    -- enable/disable/customize HTTP formatter
+    formatter = {
+      split_params = 4, -- split query/form parameters onto multiple lines if number of params exceeds this value
+      sort = { -- enable/disable alphabetical sorting in request body
+        metadata = true,
+        variables = true,
+        commands = false,
+        json = true,
+      },
+      quote_json_variables = true, -- add quotes around {{variable}} in JSON bodies
+      indent = 2, -- base indentation for scripts
+    },
+
+    on_attach = nil, -- function called when Kulala LSP attaches to the buffer
+  },
+
   -- enable/disable debug mode
   debug = 3,
+  -- enable/disable bug reports on all errors
+  generate_bug_report = false,
 
   -- set to true to enable default keymaps (check docs or {plugins_path}/kulala.nvim/lua/kulala/config/keymaps.lua for details)
   -- or override default keymaps as shown in the example below.
@@ -189,6 +291,8 @@ local M = {
       ["Show headers"] = { "H", function() require("kulala.ui").show_headers() end, },
     }
   ]]
+
+  kulala_keymaps_prefix = "",
 }
 
 return M
