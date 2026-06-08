@@ -1,3 +1,4 @@
+local Backend = require("kulala.backend")
 local Parser = require("kulala.config.parser")
 local defaults = require("kulala.config.defaults")
 local keymaps = require("kulala.config.keymaps")
@@ -32,7 +33,14 @@ local set_autocomands = function()
     group = vim.api.nvim_create_augroup("Kulala filetype setup", { clear = true }),
     pattern = M.options.lsp.filetypes,
     callback = function(ev)
-      _ = M.options.lsp.enable and require("kulala.cmd.lsp").start(ev.buf, ev.match)
+      if not (Parser.is_up_to_date() and Backend.is_up_to_date() and M.options.lsp.enable) then return end
+
+      local ft = ev.match
+      local Fs = require("kulala.utils.fs")
+      local script_fts = { javascript = true, typescript = true, lua = true }
+      if script_fts[ft] and not Fs.is_http_script_file(ft, ev.buf) then return end
+
+      require("kulala.cmd.lsp").start(ev.buf, ft)
     end,
   })
 end
@@ -46,14 +54,15 @@ end
 
 M.setup = function(config)
   M.user_config = config or {}
-  M.options = vim.tbl_deep_extend("force", M.defaults, M.user_config)
+  -- Copy defaults so repeated setup() calls do not accumulate into the shared defaults table.
+  M.options = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), M.user_config)
 
   set_legacy_options()
-  Parser.set_kulala_parser()
+  Parser.setup()
   set_syntax_hl()
   set_autocomands()
 
-  _ = M.options.show_icons == "signcolumn" and pcall(set_signcolumn_icons)
+  if M.options.show_icons == "signcolumn" then pcall(set_signcolumn_icons) end
   M.options.global_keymaps, M.options.ft_keymaps = keymaps.setup_global_keymaps()
 
   M.options.initialized = true

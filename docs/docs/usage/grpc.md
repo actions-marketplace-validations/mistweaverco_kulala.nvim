@@ -6,7 +6,9 @@
 
 ### Dependencies
 
-Ensure you have `grpcurl` installed to use this feature. You can find it here: [gRPCurl](https://github.com/fullstorydev/grpcurl).
+gRPC requests are executed by
+[kulala-core](https://github.com/mistweaverco/kulala-core)
+using native `@grpc/grpc-js` (no `grpcurl` binary required).
 
 ### Making a gRPC Request
 
@@ -20,7 +22,7 @@ GRPC flags address command service.method
 For example:
 
 ```http
-### Shared
+### KULALA_SHARED
 
 # @grpc-import-path ../protos 
 # @grpc-proto helloworld.proto
@@ -55,7 +57,7 @@ GRPC helloworld.Greeter/SayHello
 
 ### Flags
 
-Flags can be set through metadata either locally per request or globally per buffer, if included in the `Shared` block.
+Flags can be set through metadata either locally per request or globally per buffer, if included in the `KULALA_SHARED` block.
 
 ### Variables
 

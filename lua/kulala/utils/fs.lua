@@ -30,7 +30,7 @@ end
 
 ---Path separator
 ---@type "\\" | "/"
-M.ps = M.get_path_separator()
+M.ps = M.os == "windows" and "\\" or "/"
 
 M.normalize_path = function(path)
   path = vim.fs.normalize(path)
@@ -43,11 +43,10 @@ end
 ---Join paths -- similar to os.path.join in python
 M.join_paths = function(...)
   local parts = { ... }
+  local replace_ps = M.os == "windows" and "/" or "\\"
 
-  if M.os == "windows" then
-    for i, part in ipairs(parts) do
-      parts[i] = part:gsub("/", "\\")
-    end
+  for i, part in ipairs(parts) do
+    parts[i] = part:gsub(replace_ps, M.ps)
   end
 
   return table.concat(parts, M.ps)
@@ -86,6 +85,27 @@ M.is_non_http_file = function()
   return vim.iter(extensions):all(function(e)
     return ext ~= e and ft ~= e
   end)
+end
+
+---Check if the buffer file name ends with
+---.http.js or .http.ts or .http.lua
+---@param ft string filetype
+---@param buf? number buffer to check; defaults to kulala current buffer
+---@return boolean
+M.is_http_script_file = function(ft, buf)
+  local script_filetypes = { "javascript", "typescript", "lua" }
+  if not vim.tbl_contains(script_filetypes, ft) then return false end
+  local path = buf and vim.api.nvim_buf_get_name(buf) or M.get_current_buffer_path()
+  local extensions = { "js", "ts", "lua" }
+  local ext = vim.fn.fnamemodify(path, ":e")
+  local base = vim.fn.fnamemodify(path, ":t:r")
+  local enforce_external_script_naming_convention =
+    require("kulala.config").get().lsp.enforce_external_script_naming_convention
+  if not enforce_external_script_naming_convention then return true end
+  for _, e in ipairs(extensions) do
+    if ext == e and base:match("%.http$") then return true end
+  end
+  return false
 end
 
 -- find nearest file in parent directories, starting from the current buffer file path
@@ -210,11 +230,37 @@ M.file_exists = function(filename)
   return vim.fn.filereadable(filename) == 1
 end
 
+-- Check if a directory exists
+--- @param dir string
+--- @return boolean
+--- @usage local p = fs.dir_exists('.cache')
+M.dir_exists = function(dir)
+  return vim.fn.isdirectory(dir) == 1
+end
+
+-- INFO:
+-- We're using robocopy for Windows,
+-- since it should work on all modern Windows versions (7, 8, 8.1, 10, and 11)
+-- and is optimized for copying directories with many files and subdirectories.
+-- What do the flags do?
+-- /E copies all subdirectories (including empty ones)
+-- /R:0 and /W:0 skip retries for locked files so Neovim doesn't hang
+-- We're not passing /MIR or /PURGE to avoid accidentally deleting files in
+-- the destination that don't exist in the source
+
 M.copy_dir = function(source, destination)
   if M.os == "unix" or M.os == "mac" then
     vim.system({ "cp", "-r", source .. M.ps .. ".", destination }):wait()
   elseif M.os == "windows" then
-    vim.system({ "xcopy", "/H", "/E", "/I", source .. M.ps .. "*", destination }):wait()
+    vim.system({ "robocopy", source, destination, "/E", "/R:0", "/W:0" }):wait()
+  end
+end
+
+M.copy_dir_contents = function(source, destination)
+  if M.os == "unix" or M.os == "mac" then
+    vim.system({ "cp", "-r", source .. M.ps .. ".", destination }):wait()
+  elseif M.os == "windows" then
+    vim.system({ "robocopy", source, destination, "/E", "/R:0", "/W:0" }):wait()
   end
 end
 
@@ -236,25 +282,6 @@ end
 
 M.get_scripts_dir = function()
   local dir = M.join_paths(M.get_plugin_root_dir(), "parser", "scripts")
-  return dir
-end
-
-M.get_tmp_scripts_build_dir = function()
-  local dir = M.join_paths(M.get_plugin_tmp_dir(), "scripts", "build")
-  return dir
-end
-
-M.get_tmp_scripts_dir = function()
-  local dir = M.join_paths(M.get_plugin_tmp_dir(), "scripts")
-  M.ensure_dir_exists(dir)
-
-  return dir
-end
-
-M.get_request_scripts_dir = function()
-  local dir = M.join_paths(M.get_plugin_tmp_dir(), "scripts", "requests")
-  M.ensure_dir_exists(dir)
-
   return dir
 end
 
@@ -289,22 +316,6 @@ M.delete_files_in_directory = function(dir, skip_files)
   end
 
   return deleted_files
-end
-
-M.get_request_scripts_variables = function()
-  return M.read_json(M.get_request_scripts_variables_file_path())
-end
-
-M.get_request_scripts_variables_file_path = function()
-  return M.join_paths(M.get_request_scripts_dir(), "request_variables.json")
-end
-
-M.get_global_scripts_variables_file_path = function()
-  return M.join_paths(M.get_tmp_scripts_dir(), "global_variables.json")
-end
-
-M.get_global_scripts_variables = function()
-  return M.read_json(M.get_global_scripts_variables_file_path())
 end
 
 -- Check if a command is available
@@ -343,7 +354,7 @@ M.get_plugin_path = function(paths)
 end
 
 ---Read a file with path absolute or relative to buffer dir
----@param filename string path absolutre or relative to buffer dir
+---@param filename string path absolute or relative to buffer dir
 ---@param is_binary boolean|nil
 ---@return string|nil
 ---@usage local p = fs.read_file('Makefile')
@@ -450,12 +461,6 @@ M.include_file = function(file, path)
   end
 
   return status and file_to_include:close()
-end
-
---- Delete *.js request script files and request_variables.json
-M.delete_request_scripts_files = function() -- .cache/nvim/kulala/scripts/requests
-  local dir = M.get_request_scripts_dir()
-  M.delete_files_in_directory(dir)
 end
 
 ---Deletes cached files: request.json and script output

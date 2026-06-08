@@ -70,12 +70,14 @@ local function get_http_client_env(name)
   vim.iter(envs):rev():each(function(file)
     local f = FS.read_json(file) or {}
 
-    if f["$shared"] then
+    if f["$kulalaShared"] then
+      local shared = vim.deepcopy(f["$kulalaShared"])
+      shared["$kulalaDefaultHeaders"] = nil
       DB.update().http_client_env_shared =
-        vim.tbl_deep_extend("force", DB.find_unique("http_client_env_shared"), f["$shared"])
+        vim.tbl_deep_extend("force", DB.find_unique("http_client_env_shared"), shared)
     end
 
-    f["$shared"], f["$schema"] = nil, nil
+    f["$kulalaShared"], f["$schema"] = nil, nil
     DB.update().http_client_env = vim.tbl_deep_extend("force", DB.find_unique("http_client_env"), f)
   end)
 end
@@ -107,18 +109,17 @@ M.update_http_client_auth = function(config_id, data)
   FS.write_json(env_path, env, true)
 end
 
-local function get_scripts_variables(env)
-  local global_scripts_variables = FS.get_global_scripts_variables()
-  local request_scripts_variables = FS.get_request_scripts_variables()
-
-  if global_scripts_variables then env = vim.tbl_extend("force", env, global_scripts_variables) end
-  if request_scripts_variables then env = vim.tbl_extend("force", env, request_scripts_variables) end
-
-  return env
-end
-
 M.get_current_env = function()
-  return vim.g.kulala_selected_env or Config.get().default_env
+  local selected = vim.g.kulala_selected_env
+  if type(selected) == "string" and selected ~= "" then return selected end
+
+  local scoped = DB.find_unique("selected_env")
+  if type(scoped) == "string" and scoped ~= "" then return scoped end
+
+  local configured = Config.get().default_env
+  if type(configured) == "string" and configured ~= "" then return configured end
+
+  return "default"
 end
 
 M.get_env = function()
@@ -148,8 +149,6 @@ M.get_env = function()
   for key, value in pairs(db_env) do
     env[key] = value
   end
-
-  env = get_scripts_variables(env)
 
   return env
 end

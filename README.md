@@ -6,18 +6,19 @@
 
 [![Made with love](assets/badge-made-with-love.svg)](https://github.com/mistweaverco/kulala.nvim/graphs/contributors)
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/mistweaverco/kulala.nvim?style=for-the-badge)](https://github.com/mistweaverco/kulala.nvim/releases/latest)
-[![Discord](assets/badge-discord.svg)](https://discord.gg/QyVQmfY4Rt)
+[![Discord](assets/badge-discord.svg)](https://mistweaverco.com/discord)
 
 [![Main status](https://img.shields.io/github/actions/workflow/status/mistweaverco/kulala.nvim/tests.yml?label=main&branch=main&style=for-the-badge)](https://github.com/mistweaverco/kulala.nvim/actions/workflows/tests.yml)
-[![Develop status](https://img.shields.io/github/actions/workflow/status/mistweaverco/kulala.nvim/tests.yml?branch=develop&label=develop&style=for-the-badge)](https://github.com/mistweaverco/kulala.nvim/actions/workflows/tests.yml)
 
 [Requirements](https://neovim.getkulala.net/docs/getting-started/requirements) • [Install](#install) • [Usage](https://neovim.getkulala.net/docs/usage) • [HTTP File Spec](https://neovim.getkulala.net/docs/usage/http-file-spec) • [Kulala GH Action](https://github.com/mistweaverco/kulala-github-action)
 
 <p></p>
 
-A fully-featured REST Client Interface for Neovim.
+A fully-featured 🤏 HTTP/GraphQL/gRPC/Websocket-client 🐼
+interface 🖥️ for Neovim ❤️,
+that supports the Jetbrains .http spec (with full scripting support).
 
-Kulala is swahili for "rest" or "relax".
+Kulala is swahili for "rest" or "relax."
 
 It allows you to make HTTP requests from within Neovim.
 
@@ -29,7 +30,7 @@ It allows you to make HTTP requests from within Neovim.
 
 ## Features
   
-Protocols: HTTP, GRPC, GraphQL, WebSocket, Streaming
+Protocols: HTTP, gRPC, GraphQL, WebSocket, Streaming
 
 Specs: HTTP File Spec and IntelliJ HTTP Client compliant
 
@@ -64,14 +65,14 @@ Together with our standalone products [Kulala Language Server](https://github.co
 # ••
 
 Kulala team loves feature requests and feedback, so if you have any ideas or suggestions, please let us know!  
-We will be happy to implement them ❤️
+We'll be happy to implement them ❤️
 
 </div>
 
 ## Install
 
 > [!WARNING]
-> Requires Neovim 0.10.0+ and cURL.
+> Requires Neovim 0.12+ and cURL.
 >
 > See [requirements](https://neovim.getkulala.net/docs/getting-started/requirements).
 
@@ -88,7 +89,7 @@ require("lazy").setup({
       { "<leader>Ra", desc = "Send all requests" },
       { "<leader>Rb", desc = "Open scratchpad" },
     },
-    ft = {"http", "rest"},
+    ft = {"http", "rest", "javascript", "lua"},
     opts = {
       global_keymaps = false,
       global_keymaps_prefix = "<leader>R",
@@ -109,18 +110,20 @@ See complete [configuration options](https://neovim.getkulala.net/docs/getting-s
 
 For getting this project started.
 
-This project was heavily inspired by the idea of having a REST client in Neovim.
-
 The actual state of [rest.nvim](https://github.com/rest-nvim/rest.nvim)
 as archived kicked off the development of kulala.nvim.
 
+It's not archived anymore,
+but the state of the project at the time was a great motivation
+
 ### curl.nvim
 
-If you want a simple scratchpad for making HTTP requests,
+If you want a uncomplicated scratchpad for making HTTP requests,
 check out [curl.nvim](https://github.com/oysandvik94/curl.nvim)
 
-It's very different to this project, but it's a great tool for making
-HTTP requests from within Neovim and maybe just your cup of tea.
+Different to this project,
+but also a great option if you just want to make quick
+HTTP requests from within Neovim.
 
 ### httpbin.org
 

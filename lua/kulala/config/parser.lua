@@ -1,18 +1,21 @@
+local Api = require("kulala.api")
 local Fs = require("kulala.utils.fs")
-local Logger = require("kulala.logger")
 
 local M = {}
 
 local parser_name = "kulala_http"
 local filetypes = { "http", "rest" }
-local parser_exts = { "so", "dylib", "dll" }
-local install_error =
-  "Failed to install kulala_http parser. Please check your nvim-treesitter setup or install by other means."
-
-local parser_path = Fs.get_plugin_path { "..", "tree-sitter" }
+local queries_dir = vim.fs.joinpath(vim.fn.stdpath("data"), "site", "queries")
+local parsers_dir = vim.fs.joinpath(vim.fn.stdpath("data"), "site", "parser")
+local target_parser_ext = vim.fn.has("win32") == 1 and "dll" or vim.fn.has("macunix") == 1 and "dylib" or "so"
+local parser_target_path = vim.fs.joinpath(parsers_dir, parser_name .. "." .. target_parser_ext)
+local query_target_dir = vim.fs.joinpath(queries_dir, parser_name)
+local site_dir = vim.fs.joinpath(vim.fn.stdpath("data"), "site")
+local parser_source_path = Fs.get_plugin_path { "..", "tree-sitter" }
+local parser_registered = false
 
 local function get_parser_ver()
-  local ts = Fs.read_json(parser_path .. "/tree-sitter.json") or {}
+  local ts = Fs.read_json(parser_source_path .. "/tree-sitter.json") or {}
   return ts.metadata and ts.metadata.version
 end
 
@@ -20,138 +23,86 @@ local function is_parser_ver_current()
   return require("kulala.db").settings.parser_ver == get_parser_ver()
 end
 
-local function register_parser()
-  vim.treesitter.language.register(parser_name, filetypes)
+--- HACK:
+--- Neovim does not rescan rtp for parser/queries added mid-session. Re-appending
+--- the site dir refreshes discovery after a fresh install/build.
+local function ensure_site_rtp()
+  vim.opt.rtp:remove(site_dir)
+  vim.opt.rtp:append(site_dir)
 end
 
-local function append_parser_path_to_rtp()
-  vim.opt.rtp:append(parser_path)
+local function sync_queries()
+  Fs.ensure_dir_exists(queries_dir)
+  Fs.copy_dir_contents(vim.fs.joinpath(parser_source_path, "queries", parser_name), query_target_dir)
+end
+
+local function load_parser()
+  if not Fs.file_exists(parser_target_path) then return false end
+  return vim.treesitter.language.add(parser_name) == true
+end
+
+M.register_parser = function()
+  if parser_registered then return end
+  if not load_parser() then return end
+  parser_registered = true
+  -- queries/kulala_http/*.scm live under lua/tree-sitter/queries/
+  vim.opt.rtp:prepend(parser_source_path)
+  ensure_site_rtp()
+  sync_queries()
+  vim.treesitter.language.register(parser_name, filetypes)
+  vim.treesitter.language.register("markdown", "kulala_ui")
+  local backend = require("kulala.backend")
+  if not Api.has_triggered_ready() and backend.is_up_to_date() then Api.trigger("ready") end
+  vim.api.nvim_create_autocmd("FileType", {
+    group = vim.api.nvim_create_augroup("KulalaTreesitter", { clear = true }),
+    callback = function(args)
+      if M.is_up_to_date() and vim.list_contains(filetypes, args.match) then
+        if load_parser() then vim.treesitter.start(args.buf, parser_name) end
+      end
+    end,
+  })
 end
 
 local function save_parser_ver()
   require("kulala.db").settings:write { parser_ver = get_parser_ver() }
 end
 
-local function handle_install_result(is_installed)
-  if is_installed then
-    save_parser_ver()
-    register_parser()
-  else
-    Logger.error(install_error)
-  end
-end
-
-local function setup_nvim_treesitter_main()
-  local ts_config = require("nvim-treesitter.config")
-
-  local install_dir = vim.fs.joinpath(vim.fn.stdpath("data"), "site")
-  vim.opt.rtp:prepend(install_dir)
-
-  local function register_parser_config()
-    require("nvim-treesitter.parsers").kulala_http = {
-      install_info = {
-        path = parser_path,
-        generate = false,
-        generate_from_json = false,
-        queries = "queries/kulala_http",
-      },
-    }
-  end
-
-  vim.api.nvim_create_autocmd("User", {
-    pattern = "TSUpdate",
-    callback = register_parser_config,
-  })
-
-  register_parser_config()
-
-  require("nvim-treesitter").install({ parser_name }):wait(10000)
-  handle_install_result(vim.tbl_contains(ts_config.get_installed("parsers"), parser_name))
-end
-
-local function setup_nvim_treesitter_master()
-  local parsers = require("nvim-treesitter.parsers")
-
-  local parser_config = parsers.get_parser_configs()
-  parser_config.kulala_http = {
-    install_info = {
-      url = parser_path,
-      files = { "src/parser.c" },
-      generate_requires_npm = false,
-      requires_generate_from_grammar = false,
-    },
-    filetype = "http",
-  }
-
-  require("nvim-treesitter.install").commands.TSInstallSync["run!"](parser_name)
-  handle_install_result(parsers.has_parser(parser_name))
-end
-
-local function setup_with_nvim_treesitter()
-  local parsers = vim.F.npcall(require, "nvim-treesitter.parsers")
-
-  if not parsers then
-    return Logger.warn(
-      "Nvim-treesitter not found. The kulala_http parser is required for syntax highlighting and formatting."
-    )
-  end
-
-  if parsers.get_parser_configs then
-    setup_nvim_treesitter_master()
-  else
-    setup_nvim_treesitter_main()
-  end
-end
-
-local function get_nvim_treesitter_install_dirs()
-  local dirs = {}
-
-  -- main branch install location
-  table.insert(dirs, vim.fs.joinpath(vim.fn.stdpath("data"), "site", "parser"))
-
-  -- master branch install location (uses nvim-treesitter config or package path)
-  local ts_configs = vim.F.npcall(require, "nvim-treesitter.configs")
-  if ts_configs and ts_configs.get_parser_install_dir then
-    local ts_dir = ts_configs.get_parser_install_dir()
-    if ts_dir then table.insert(dirs, ts_dir) end
-  end
-
-  return dirs
-end
-
-local function is_installed_by_nvim_treesitter()
-  for _, dir in ipairs(get_nvim_treesitter_install_dirs()) do
-    for _, ext in ipairs(parser_exts) do
-      local parser_file = vim.fs.joinpath(dir, parser_name .. "." .. ext)
-      if vim.uv.fs_stat(parser_file) then return true end
+local function setup_tree_sitter()
+  Fs.ensure_dir_exists(parsers_dir)
+  sync_queries()
+  local output_path = vim.fs.joinpath(parsers_dir, parser_name .. "." .. target_parser_ext)
+  vim.system({ "tree-sitter", "build", "-o", output_path }, {
+    cwd = parser_source_path,
+  }, function(obj)
+    if obj.code ~= 0 then
+      vim.schedule(function()
+        print("Failed to build tree-sitter parser: " .. (obj.stderr or ""))
+      end)
+    else
+      vim.schedule(function()
+        ensure_site_rtp()
+        save_parser_ver()
+        M.register_parser()
+        if vim.bo.filetype == "http" then vim.cmd("edit!") end
+      end)
     end
-  end
-  return false
+  end)
 end
 
 local function has_kulala_parser()
-  local ok, inspected = pcall(function()
-    return vim.treesitter and vim.treesitter.language and vim.treesitter.language.inspect(parser_name)
-  end)
-
-  if ok and type(inspected) == "table" and next(inspected) ~= nil then return true end
-
-  for _, ext in ipairs(parser_exts) do
-    if #vim.api.nvim_get_runtime_file("parser/" .. parser_name .. "." .. ext, true) > 0 then return true end
-  end
-
-  return false
+  return Fs.file_exists(parser_target_path) and Fs.dir_exists(query_target_dir)
 end
 
-M.set_kulala_parser = function()
-  append_parser_path_to_rtp()
+M.is_up_to_date = function()
+  return has_kulala_parser() and is_parser_ver_current()
+end
 
-  local is_current = is_parser_ver_current()
-  local needs_install = (is_installed_by_nvim_treesitter() and not is_current) or not has_kulala_parser()
-  if needs_install then return setup_with_nvim_treesitter() end
-
-  if not is_current then save_parser_ver() end
-  register_parser()
+M.setup = function()
+  if not M.is_up_to_date() then
+    setup_tree_sitter()
+    return
+  end
+  M.register_parser()
 end
 
 return M

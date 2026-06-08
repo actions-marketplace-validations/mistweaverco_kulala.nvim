@@ -6,19 +6,22 @@ local default_options = {
 
 local log_levels = vim.log.levels
 
+local is_headless = #vim.api.nvim_list_uis() == 0
+
 local function debug_level()
   local debug = require("kulala.config").get().debug
   return debug == nil and 0 or (debug == false and 3 or (debug == true and 4 or debug))
 end
 
-local function generate_bug_report(message)
-  vim.schedule(function()
-    local choice = vim.fn.confirm("This looks like a bug. Would you like to generate a bug report?", "&Yes\n&No", 1)
-    if choice == 1 then require("kulala.logger.bug_report").generate_bug_report(message) end
-  end)
-end
+M.LoggerLogLevels = {
+  error = log_levels.ERROR,
+  warn = log_levels.WARN,
+  info = log_levels.INFO,
+  debug = log_levels.DEBUG,
+}
 
 M.log = function(message, level, opts)
+  if is_headless then return end
   opts = vim.tbl_extend("force", default_options, opts or {})
   level = level or log_levels.INFO
 
@@ -27,25 +30,30 @@ M.log = function(message, level, opts)
   if vim.fn.has("gui_running") == 0 then
     return vim.print(message)
   elseif vim.in_fast_event() then
-    notify = vim.schedule_wrap(vim.notify)
+    local vim_notify = vim.notify
+    ---@cast vim_notify fun(msg: string, level: integer, opts: table): integer
+    notify = vim.schedule_wrap(vim_notify)
   end
 
   notify(message, level, opts)
 end
 
+M.notify = M.log
+
 M.info = function(message, opts)
-  _ = debug_level() > 2 and M.log(message, log_levels.INFO, opts)
+  if is_headless then return end
+  if debug_level() > 2 then M.log(message, log_levels.INFO, opts) end
 end
 
 M.warn = function(message, opts)
-  _ = debug_level() > 1 and M.log(message, log_levels.WARN, opts)
+  if is_headless then return end
+  if debug_level() > 1 then M.log(message, log_levels.WARN, opts) end
 end
 
 ---@param message string
 ---@param lines_no number|nil -- no of error lines to show
----@param report boolean|nil -- whether to generate a bug report
-M.error = function(message, lines_no, opts)
-  opts = opts or {}
+M.error = function(message, lines_no)
+  if is_headless then return end
 
   local debug = debug_level()
   if debug == 0 then return end
@@ -55,11 +63,10 @@ M.error = function(message, lines_no, opts)
 
   local short_message = table.concat(lines, "\n", 1, lines_no)
   M.log(short_message, log_levels.ERROR)
-
-  if require("kulala.config").options.generate_bug_report or opts.report then generate_bug_report(message) end
 end
 
 M.debug = function(message, opts)
+  if is_headless then return end
   local time = vim.uv.hrtime() % 1e10 / 1e6
   time = math.floor(time * 100) / 100
 
@@ -68,6 +75,7 @@ M.debug = function(message, opts)
 end
 
 M.trace = function(message, opts)
+  if is_headless then return end
   local trace = debug.traceback()
   if not trace then return end
 
