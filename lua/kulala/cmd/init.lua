@@ -186,10 +186,16 @@ local function build_kulala_core_run_payload(parsed_request, run_opts)
     }
   end
 
+  local response_format = CONFIG.get().response_format or {}
   local run_payload = {
     content = content,
     env = ENV_PARSER.get_current_env() or "default",
     limit = limit,
+    responseFormat = {
+      indent = response_format.indent,
+      expand_tabs = response_format.expand_tabs,
+      sort_keys = response_format.sort_keys,
+    },
   }
   local filepath = run_opts.filepath or http_filepath
   if filepath then run_payload.filepath = filepath end
@@ -487,6 +493,7 @@ local function save_response(request_status, parsed_request)
     _kulala_redirect_chain = parsed_request._kulala_redirect_chain,
     _kulala_verbose_trace = parsed_request._kulala_verbose_trace,
     _kulala_body_type = request_status._kulala_body_type,
+    _kulala_media_type = request_status._kulala_media_type,
   }
 
   parsed_request._kulala_redirect_chain = nil
@@ -608,10 +615,12 @@ end
 
 local function kulala_core_body_text(body)
   if type(body) == "table" and body.type == "json" then
+    if type(body.formatted) == "string" then return body.formatted end
     local encoded = vim.json.encode(body.content)
     return encoded or vim.inspect(body.content)
   end
   if type(body) == "table" and body.type == "text" then return body.content or "" end
+  if type(body) == "string" then return body end
   return ""
 end
 
@@ -783,6 +792,7 @@ local function kulala_core_deliver_result(item, target, duration_wall, callback,
         stdout = kulala_core_stats_stdout(item),
         duration = duration_ns,
         _kulala_body_type = type(item.body) == "table" and item.body.type or nil,
+        _kulala_media_type = type(item.body) == "table" and item.body.mediaType or nil,
         _kulala_body_snapshot = kulala_core_body_text(item.body),
         _kulala_headers_snapshot = kulala_core_headers_text(item.headers),
         _kulala_script_console = console,
@@ -861,6 +871,7 @@ local function kulala_core_deliver_result(item, target, duration_wall, callback,
     errors = "",
     duration = duration_ns,
     _kulala_body_type = type(item.body) == "table" and item.body.type or nil,
+    _kulala_media_type = type(item.body) == "table" and item.body.mediaType or nil,
     _kulala_body_snapshot = kulala_core_body_text(item.body),
     _kulala_headers_snapshot = kulala_core_headers_text(item.headers),
     _kulala_script_console = console,

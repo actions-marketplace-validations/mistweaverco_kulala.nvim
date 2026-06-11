@@ -4,7 +4,6 @@ local CONFIG = require("kulala.config")
 local DB = require("kulala.db")
 local DOC_PARSER = require("kulala.parser.document")
 local Ext_processing = require("kulala.external_processing")
-local FORMATTER = require("kulala.formatter")
 local FS = require("kulala.utils.fs")
 local Float = require("kulala.ui.float")
 local GLOBALS = require("kulala.globals")
@@ -245,7 +244,7 @@ local function show(contents, filetype, mode)
   show_progress()
 end
 
----Prefer kulala-core `body.type` (`json` / `text`) over MIME sniffing for UI filetype and jq.
+---Prefer kulala-core `body.type` for JSON; otherwise resolve via `mediaType` or response headers.
 ---@param r Response
 ---@return table|nil config or nil to fall back to headers
 local function content_config_from_kulala_core(r)
@@ -255,25 +254,21 @@ local function content_config_from_kulala_core(r)
     if type(json) == "string" then return CONFIG.get().contenttypes[json] end
     return json
   end
-  return CONFIG.default_contenttype
+  if type(r._kulala_media_type) == "string" and r._kulala_media_type ~= "" then
+    return INT_PROCESSING.get_config_contenttype { ["content-type"] = r._kulala_media_type }
+  end
+  return nil
 end
 
----Format body content based on kulala-core hints or MIME type, preferring jq filter results when applicable.
+---Resolve body text and syntax filetype (formatting is done in kulala-core).
 ---@param view? string current view, used to determine if jq filter is applied
----@return string formatted body,
+---@return string body,
 ---@return string filetype for syntax highlighting
 local function format_body(view)
   local r = get_current_response()
-  local headers = r.headers
-  local body = r.body
-
-  local contenttype = content_config_from_kulala_core(r) or INT_PROCESSING.get_config_contenttype(headers, view)
-
-  if body and contenttype.formatter then
-    body = FORMATTER.format(contenttype.ft, contenttype.formatter, body, { verbose = false })
-  end
-
-  return body, contenttype.ft
+  local contenttype = content_config_from_kulala_core(r)
+    or INT_PROCESSING.get_config_contenttype(r.headers, view)
+  return r.body, contenttype.ft
 end
 
 local function update_filter()
