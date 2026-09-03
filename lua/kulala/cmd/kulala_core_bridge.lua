@@ -81,10 +81,11 @@ local function env_with_data_dir()
 end
 
 ---Subprocess timeout (ms). Uses `kulala_core.timeout`, else 1 minute.
----@return number|nil nil disables vim.system timeout (not recommended)
+---@return number|nil 0 disables vim.system timeout (not recommended)
 local function invoke_timeout_ms()
   local t = CONFIG.get().kulala_core.timeout
   if t == nil then return 60000 end
+  if t == 0 then return nil end
   if type(t) == "number" and t > 0 then return t end
   return nil
 end
@@ -211,18 +212,26 @@ function M.invoke(payload, cwd)
   return completed or { code = 124, stdout = "", stderr = "kulala-core subprocess timed out" }
 end
 
----@param first table|nil
+---@param item table|nil
 ---@return boolean
-local function is_prompt_item(first)
-  if type(first) ~= "table" then return false end
-  if first.prompt == true then return true end
+local function is_prompt_item(item)
+  if type(item) ~= "table" then return false end
+  if item.prompt == true then return true end
   if
-    type(first.promptId) == "string"
-    and first.promptId ~= ""
-    and type(first.promptType) == "string"
-    and first.promptType ~= ""
+    type(item.promptId) == "string"
+    and item.promptId ~= ""
+    and type(item.promptType) == "string"
+    and item.promptType ~= ""
   then
     return true
+  end
+  return false
+end
+
+local function wrapper_has_prompt(wrapper)
+  if not wrapper or wrapper.type ~= "responses" or type(wrapper.data) ~= "table" then return false end
+  for _, item in ipairs(wrapper.data) do
+    if is_prompt_item(item) then return true end
   end
   return false
 end
@@ -292,8 +301,7 @@ end
 ---@return string|nil err
 local function run_result_from_job(job)
   local wrapper = M.try_decode_wrapper(job.stdout)
-  local first = wrapper and wrapper.data and wrapper.data[1]
-  local is_prompt = wrapper and wrapper.type == "responses" and is_prompt_item(first)
+  local is_prompt = wrapper_has_prompt(wrapper)
 
   if job.code ~= 0 and not is_prompt then
     local err = vim.trim(job.stderr or "")
@@ -429,6 +437,34 @@ function M.crypto(op, args, cwd)
   return nil, "invalid kulala-core crypto output"
 end
 
+---@param body table|string|nil
+---@return string
+local function response_body_text(body)
+  if type(body) == "table" and body.type == "json" then
+    if type(body.formatted) == "string" then return body.formatted end
+    return vim.json.encode(body.content) or ""
+  end
+  if type(body) == "table" and body.type == "text" then return body.content or "" end
+  if type(body) == "table" and body.type == "binary" then
+    local media_type = body.mediaType or "application/octet-stream"
+    local bytes = tonumber(body.byteLength) or 0
+    local size
+    if bytes < 1024 then
+      size = ("%d B"):format(bytes)
+    elseif bytes < 1024 * 1024 then
+      size = ("%.1f KB"):format(bytes / 1024)
+    else
+      size = ("%.1f MB"):format(bytes / (1024 * 1024))
+    end
+    if type(media_type) == "string" and media_type:lower():find("^image/", 1, false) then
+      return ("Image response (%s, %s)"):format(media_type, size)
+    end
+    return ("Binary response body (%s, %s)"):format(media_type, size)
+  end
+  if type(body) == "string" then return body end
+  return ""
+end
+
 ---@param opts {
 ---   url: string,
 ---   method?: string,
@@ -441,16 +477,6 @@ end
 ---@param cwd string|nil
 ---@return table|nil result { status, headers, body, url }
 ---@return string|nil err
-local function response_body_text(body)
-  if type(body) == "table" and body.type == "json" then
-    if type(body.formatted) == "string" then return body.formatted end
-    return vim.json.encode(body.content) or ""
-  end
-  if type(body) == "table" and body.type == "text" then return body.content or "" end
-  if type(body) == "string" then return body end
-  return ""
-end
-
 function M.http_request(opts, cwd)
   M.require_enabled()
   local response_format = CONFIG.get().response_format or {}
@@ -523,11 +549,37 @@ function M.apply_jq_filter(opts, cwd)
   return nil, "invalid kulala-core apply_jq_filter output"
 end
 
----Start a long-lived WebSocket session (native kulala-core, replaces websocat).
----@param opts { url: string, body?: string, headers?: table }
----@param handlers { on_stdout: function, on_stderr: function, on_exit: function }
+---Convert an image body to PNG for terminal graphics protocols.
+---@param opts { content: string, mediaType?: string, target?: "png" }
 ---@param cwd string|nil
----@return vim.SystemObj|nil
+---@return table|nil result `{ content, mediaType, byteLength, convertedFrom? }`
+---@return string|nil err
+function M.convert_image(opts, cwd)
+  M.require_enabled()
+  local payload = {
+    action = "convert_image",
+    content = opts.content,
+    mediaType = opts.mediaType,
+    target = opts.target or "png",
+  }
+  local job = M.invoke(payload, cwd)
+  local res = decode_action_response(job.stdout)
+  if res and res.success == true and type(res.content) == "string" then
+    return {
+      content = res.content,
+      mediaType = res.mediaType or "image/png",
+      byteLength = res.byteLength or 0,
+      convertedFrom = res.convertedFrom,
+    },
+      nil
+  end
+  if res and res.error then return nil, res.error end
+  if job.code ~= 0 then
+    return nil, vim.trim(job.stderr or "") ~= "" and vim.trim(job.stderr) or "kulala-core convert_image failed"
+  end
+  return nil, "invalid kulala-core convert_image output"
+end
+
 ---@param bufnr? integer
 ---@return boolean
 local function valid_bufnr(bufnr)
@@ -535,18 +587,90 @@ local function valid_bufnr(bufnr)
 end
 
 ---@param line string
----@param end_col0 integer 0-based index after the last typed character
----@return integer start_col0 0-based start of the completion prefix
----@return integer prefix_len
-local function completion_prefix_range(line, end_col0)
-  end_col0 = math.max(0, math.min(end_col0, #line))
-  local before = end_col0 > 0 and line:sub(1, end_col0) or ""
+---@param end_col integer 1-based column after the last typed character (Vim/LSP end)
+---@param new_text string
+---@param label? string
+---@return integer start_col 0-based LSP start of replaced range
+---@return integer end_col 0-based LSP exclusive end of replaced range
+---@return string|nil closing_suffix appended when `{{` is not closed yet
+local function completion_replace_range(line, end_col, new_text, label)
+  end_col = math.max(0, math.min(end_col, #line))
+  local before = end_col > 0 and line:sub(1, end_col) or ""
+
+  local open_col1 = nil
+  local search_from = 1
+  while true do
+    local next_open = before:find("{{", search_from, true)
+    if not next_open then break end
+    open_col1 = next_open
+    search_from = next_open + 1
+  end
+
+  if open_col1 then
+    local inner_start = open_col1 + 2
+
+    local function find_template_close(from)
+      local i = from
+      while i < #line do
+        if line:sub(i, i + 1) == "{{" then
+          local nested_close = find_template_close(i + 2)
+          if not nested_close then return nil end
+          i = nested_close + 2
+        elseif line:sub(i, i + 1) == "}}" then
+          return i
+        else
+          i = i + 1
+        end
+      end
+      return nil
+    end
+
+    local close_col1 = find_template_close(inner_start)
+    if close_col1 then
+      local replace_end = math.max(inner_start, math.min(end_col, close_col1 - 1))
+      return inner_start - 1, replace_end, nil
+    end
+
+    local typed = before:sub(inner_start)
+    if not typed:find("}", 1, true) then
+      local function template_var_replace_end(from, limit)
+        local i = from
+        while i <= limit do
+          local ch = line:sub(i, i)
+          if not ch:match("[%w%$%.%[%]%*%-]") then break end
+          i = i + 1
+        end
+        return math.max(from, i - 1)
+      end
+      local replace_end = template_var_replace_end(inner_start, end_col)
+      return inner_start - 1, replace_end, "}}"
+    end
+  end
+
+  local function longest_suffix_prefix_match(candidate)
+    local max_len = math.min(#before, #candidate)
+    for len = max_len, 1, -1 do
+      local suffix = before:sub(#before - len + 1)
+      if candidate:sub(1, len) == suffix then return len end
+    end
+    return 0
+  end
+
+  local match_len = longest_suffix_prefix_match(new_text)
+  if match_len == 0 and type(label) == "string" and label ~= new_text then
+    match_len = longest_suffix_prefix_match(label)
+  end
+  if match_len > 0 then return end_col - match_len, end_col, nil end
+
+  local template_prefix = before:match("{{([^}]*)$")
+  if template_prefix ~= nil then return end_col - #template_prefix, end_col, "}}" end
+
   -- Include `$` (not a Vim keyword char); avoid matching only `kul` after `$`.
-  local prefix = before:match("([%w$%.]+)$") or ""
-  return end_col0 - #prefix, #prefix
+  local word = before:match("([%w$%.]+)$") or ""
+  return end_col - #word, end_col, nil
 end
 
----Neovim/cmp strip a shared prefix from `insertText` but treat `$` as non-keyword, breaking `$kulala.*`.
+---blink.cmp workaround for `$kulala.*` plus fallback textEdit when kulala-core did not set one.
 ---@param items table[]
 ---@param bufnr integer
 ---@param position table LSP position (`line`/`character`, 0-based)
@@ -567,8 +691,6 @@ function M.apply_completion_text_edits(items, bufnr, position)
   end
   if type(end_col0) ~= "number" then return end
 
-  local start_col0 = completion_prefix_range(line, end_col0)
-
   local plain_text = vim.lsp.protocol.InsertTextFormat.PlainText
 
   for _, item in ipairs(items) do
@@ -578,10 +700,18 @@ function M.apply_completion_text_edits(items, bufnr, position)
     -- blink.cmp + vim.snippet.expand strip a prefix that excludes `$` (e.g. `$kul` → `.prompt`).
     if type(item.label) == "string" and item.label:match("^%$kulala") then item.insertTextFormat = plain_text end
 
+    if item.textEdit then
+      item.insertText = nil
+      goto continue
+    end
+
+    local start_col0, end_col0_edit, closing_suffix = completion_replace_range(line, end_col0, new_text, item.label)
+    if closing_suffix then new_text = new_text .. closing_suffix end
+
     item.textEdit = {
       range = {
         start = { line = line0, character = start_col0 },
-        ["end"] = { line = line0, character = end_col0 },
+        ["end"] = { line = line0, character = end_col0_edit },
       },
       newText = new_text,
     }
@@ -673,6 +803,120 @@ function M.graphql_introspect(bufnr)
     return nil, vim.trim(job.stderr or "") ~= "" and vim.trim(job.stderr) or "kulala-core graphql_introspect failed"
   end
   return nil, "invalid kulala-core graphql_introspect output"
+end
+
+---@param cache_key string|nil When omitted, clears all cached OpenAPI schemas.
+---@return boolean ok
+---@return string|nil err
+---@return table|nil result { cleared, keys? }
+function M.clear_openapi_schema(cache_key)
+  M.require_enabled()
+  local payload = { action = "clear_openapi_schema" }
+  if type(cache_key) == "string" and cache_key ~= "" then payload.cacheKey = cache_key end
+  local job = M.invoke(payload, nil)
+  local res = decode_action_response(job.stdout)
+  if res and res.success == true then return true, nil, res end
+  if res and res.error then return false, res.error, nil end
+  if job.code ~= 0 then
+    return false,
+      vim.trim(job.stderr or "") ~= "" and vim.trim(job.stderr) or "kulala-core clear_openapi_schema failed",
+      nil
+  end
+  return false, "invalid kulala-core clear_openapi_schema output", nil
+end
+
+---Load OpenAPI spec and return explorer tree for block at cursor.
+---@param bufnr? integer
+---@param line? integer 1-based line (defaults to cursor)
+---@param column? integer 1-based column
+---@return table|nil result { ok, openapi? }
+---@return string|nil err
+function M.openapi_load(bufnr, line, column)
+  M.require_enabled()
+  local payload, cwd = cursor_request_payload(bufnr)
+  if not payload then return nil, "invalid buffer" end
+  if type(line) == "number" then payload.line = line end
+  if type(column) == "number" then payload.column = column end
+  payload.action = "openapi_load"
+  payload.env = require("kulala.parser.env").get_current_env() or "default"
+  local job = M.invoke(payload, cwd)
+  local res = decode_action_response(job.stdout)
+  if res and res.ok == true and type(res.openapi) == "table" then return res, nil end
+  if res and res.error then return res, res.error end
+  if job.code ~= 0 then
+    return nil, vim.trim(job.stderr or "") ~= "" and vim.trim(job.stderr) or "kulala-core openapi_load failed"
+  end
+  return nil, "invalid kulala-core openapi_load output"
+end
+
+---Run one OpenAPI operation with scripts inherited from parent block.
+---@param bufnr? integer HTTP buffer
+---@param operation_key string e.g. `GET /pets`
+---@param line? integer 1-based line on openapi block
+---@param column? integer 1-based column
+---@return table|nil item kulala-core run result item
+---@return string|nil err
+function M.openapi_run_operation(bufnr, operation_key, line, column, parameter_overrides)
+  M.require_enabled()
+  local payload, cwd = buffer_payload(bufnr)
+  if not payload then return nil, "invalid buffer" end
+  payload.action = "openapi_run_operation"
+  payload.operationKey = operation_key
+  payload.env = require("kulala.parser.env").get_current_env() or "default"
+  if type(parameter_overrides) == "table" and not vim.tbl_isempty(parameter_overrides) then
+    payload.parameterOverrides = parameter_overrides
+  end
+  if type(line) == "number" then
+    payload.line = line
+    payload.column = column or 1
+  else
+    local pos = vim.api.nvim_win_get_cursor(0)
+    payload.line = pos[1]
+    payload.column = pos[2]
+  end
+  local job = M.invoke(payload, cwd)
+  local res = decode_action_response(job.stdout)
+  if res and res.success == true then return res, nil end
+  if res and res.error then return res, res.error end
+  if job.code ~= 0 then
+    return nil, vim.trim(job.stderr or "") ~= "" and vim.trim(job.stderr) or "kulala-core openapi_run_operation failed"
+  end
+  return nil, "invalid kulala-core openapi_run_operation output"
+end
+
+---Serialize one OpenAPI operation as a standalone `.http` block.
+---@param bufnr? integer HTTP buffer
+---@param operation_key string e.g. `GET /pets`
+---@param line? integer 1-based line on openapi block
+---@param column? integer 1-based column
+---@return string|nil content
+---@return string|nil err
+function M.openapi_to_http(bufnr, operation_key, line, column, parameter_overrides)
+  M.require_enabled()
+  local payload, cwd = buffer_payload(bufnr)
+  if not payload then return nil, "invalid buffer" end
+  payload.action = "openapi_to_http"
+  payload.operationKey = operation_key
+  payload.env = require("kulala.parser.env").get_current_env() or "default"
+  if type(parameter_overrides) == "table" and not vim.tbl_isempty(parameter_overrides) then
+    payload.parameterOverrides = parameter_overrides
+  end
+  if type(line) == "number" then
+    payload.line = line
+    payload.column = column or 1
+  else
+    local pos = vim.api.nvim_win_get_cursor(0)
+    payload.line = pos[1]
+    payload.column = pos[2]
+  end
+  local job = M.invoke(payload, cwd)
+  local res = decode_action_response(job.stdout)
+  if res and res.ok == true and type(res.content) == "string" then return res.content, nil end
+  if res and res.error then return nil, res.error end
+  if job.code ~= 0 then
+    return nil, vim.trim(job.stderr or "") ~= "" and vim.trim(job.stderr) or "kulala-core openapi_to_http failed"
+  end
+  return nil, "invalid kulala-core openapi_to_http output"
 end
 
 ---@param on_done fun(res: table|nil, err: string|nil)
@@ -874,6 +1118,48 @@ function M.lsp_diagnostics_async(bufnr, on_done)
   end)
 end
 
+---@param bufnr? integer
+---@param lsp_params? table|nil `textDocument/inlayHint` params (uses `range` when set)
+---@return table[]|nil hints InlayHint[]
+---@return string|nil err
+function M.lsp_inlay_hints(bufnr, lsp_params)
+  M.require_enabled()
+  local payload, cwd = buffer_payload(bufnr)
+  if not payload then return nil, "invalid buffer" end
+  payload.action = "lsp_inlay_hints"
+  payload.env = require("kulala.parser.env").get_current_env() or "default"
+  if type(lsp_params) == "table" and type(lsp_params.range) == "table" then payload.range = lsp_params.range end
+  local job = M.invoke(payload, cwd)
+  local res = decode_action_response(job.stdout)
+  if type(res) == "table" then return res, nil end
+  if job.code ~= 0 then
+    return nil, vim.trim(job.stderr or "") ~= "" and vim.trim(job.stderr) or "kulala-core lsp_inlay_hints failed"
+  end
+  return nil, "invalid kulala-core lsp_inlay_hints output"
+end
+
+---@param bufnr? integer
+---@param lsp_params? table|nil `textDocument/inlayHint` params (uses `range` when set)
+---@param on_done fun(res: table[]|nil, err: string|nil)
+function M.lsp_inlay_hints_async(bufnr, lsp_params, on_done)
+  M.require_enabled()
+  local payload, cwd = buffer_payload(bufnr)
+  if not payload then return invalid_buffer_async(on_done) end
+  payload.action = "lsp_inlay_hints"
+  payload.env = require("kulala.parser.env").get_current_env() or "default"
+  if type(lsp_params) == "table" and type(lsp_params.range) == "table" then payload.range = lsp_params.range end
+  M.invoke_async(payload, cwd, function(job)
+    local res, err = decode_job_stdout(job)
+    if type(res) ~= "table" then
+      res = nil
+      err = err or "invalid kulala-core lsp_inlay_hints output"
+    end
+    vim.schedule(function()
+      on_done(res, err)
+    end)
+  end)
+end
+
 ---@param curl string
 ---@return string[]|nil lines
 ---@return string|nil err
@@ -889,6 +1175,11 @@ function M.from_curl(curl)
   return nil, "invalid kulala-core from_curl output"
 end
 
+---Start a long-lived WebSocket session (native kulala-core, replaces websocat).
+---@param opts { url: string, body?: string, headers?: table }
+---@param handlers { on_stdout: function, on_stderr: function, on_exit: function }
+---@param cwd string|nil
+---@return vim.SystemObj|nil
 function M.websocket_start(opts, handlers, cwd)
   M.require_enabled()
   local exe = M.executable_path()

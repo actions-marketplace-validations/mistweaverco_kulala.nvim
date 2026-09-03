@@ -11,7 +11,7 @@ local M = {
     path = nil,
     -- Subprocess timeout (ms) for kulala-core.
     -- Default is 60000 (1 minute).
-    -- nil disables the vim.system timeout.
+    -- 0 disables the vim.system timeout.
     timeout = 60000,
     -- Optional override for kulala-core persistence
     -- (cookies, OAuth, prompts).
@@ -24,10 +24,21 @@ local M = {
     data_dir = nil,
     -- Optional override for download url
     download_url = "https://github.com/mistweaverco/kulala-core/releases/download/%s/%s",
+    download_tool = "curl", -- or "wget"
   },
   -- Restore request history and UI after sourcing a vim session (:h 'sessionoptions' globals).
   session = {
     restore = true,
+  },
+
+  treesitter = {
+    -- enable/disable kulala.nvim own
+    -- handling of tree-sitter parser and queries for HTTP scripts
+    -- like downloading, building, and installing the parser and queries.
+    enable = true,
+    -- path to tree-sitter CLI, if not in PATH
+    -- if enable is false, this is not used
+    cli_path = "tree-sitter",
   },
 
   -- dev, test, prod, can be anything
@@ -48,7 +59,7 @@ local M = {
   ui = {
     -- display mode: possible values: "split", "float"
     display_mode = "split",
-    -- split direction: possible values: "above", "right", "below", "left"
+    -- split direction: possible values: "above", "right", "below", "left", fun(): "above"|"right"|"below"|"left"
     split_direction = "right",
     -- window options to override win_config: width/height/split/vertical.., buffer/window options
     win_opts = { bo = {}, wo = {} }, ---@type kulala.ui.win_config
@@ -115,6 +126,9 @@ local M = {
 
     -- used by `Copy as Curl` command to determine whether to inline request body
     max_request_size = 2048,
+
+    -- Display image response bodies inline via Kitty graphics / iTerm2 protocols
+    show_images = true,
 
     report = {
       -- possible values: true | false | "on_error"
@@ -238,6 +252,48 @@ local M = {
   ]]
 
   kulala_keymaps_prefix = "",
+
+  -- OpenAPI explorer panel keymaps; override with custom keymaps as required
+  -- (see docs or lua/kulala/config/keymaps.lua)
+  ---@type boolean|table
+  openapi_panel_keymaps = true,
+  --[[
+    {
+      ["Run"] = { "<CR>", function() require("kulala.ui.openapi_panel").run() end, },
+    }
+  ]]
+
+  -- Forward script console output (`console.*`, `client.log`) to vim.notify.
+  -- Set to false to disable. Use a table to customize title or handler.
+  ---@type boolean|KulalaScriptConsoleNotifyConfig
+  script_console_notify = true,
+  --[[
+    {
+      enabled = true,
+      title = "kulala",
+      notify = function(message, level, opts, entry)
+        vim.notify(message, level, opts)
+      end,
+    }
+  ]]
+
+  openapi_panel = {
+    --- Split placement for the explorer buffer (same values as `split_direction`).
+    split = "right",
+    signs = { folded = ">", expanded = "v" },
+    highlights = {
+      section = "Title",
+      operation = "Function",
+      parameter = "Identifier",
+      response = "Number",
+      schema = "Type",
+      try_it_out = "String",
+      description = "Comment",
+      badge = "Comment",
+      sign = "Special",
+      value = "Constant",
+    },
+  },
 }
 
 return M

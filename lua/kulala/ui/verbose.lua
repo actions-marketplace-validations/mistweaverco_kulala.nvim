@@ -14,6 +14,16 @@ local function format_hop_body(body)
     return vim.inspect(body.content), "text"
   end
   if body.type == "text" and body.content then return Markdown.fenced("text", body.content), "text" end
+  if body.type == "binary" then
+    local media_type = body.mediaType or "application/octet-stream"
+    local bytes = tonumber(body.byteLength) or 0
+    local size = bytes < 1024 and ("%d B"):format(bytes)
+      or bytes < 1024 * 1024 and ("%.1f KB"):format(bytes / 1024)
+      or ("%.1f MB"):format(bytes / (1024 * 1024))
+    local note = media_type:lower():find("^image/", 1, false) and ("Image response (%s, %s)"):format(media_type, size)
+      or ("Binary response body (%s, %s)"):format(media_type, size)
+    return Markdown.fenced("text", note), "text"
+  end
   return "", "text"
 end
 
@@ -26,7 +36,7 @@ local function format_hop(hop, index, title)
   local parts = {}
   table.insert(
     parts,
-    ("## %s %d — HTTP %s\n"):format(title, index, Markdown.md_escape_cell(tostring(hop.status or "?")))
+    ("## %s %d - HTTP %s\n"):format(title, index, Markdown.md_escape_cell(tostring(hop.status or "?")))
   )
   if hop.url then table.insert(parts, ("**URL:** %s\n"):format(Markdown.md_escape_cell(hop.url))) end
 
@@ -106,7 +116,7 @@ function M.format(r)
     end
   end
 
-  table.insert(parts, ("## Response — HTTP %s\n"):format(Markdown.md_escape_cell(tostring(r.response_code or "?"))))
+  table.insert(parts, ("## Response - HTTP %s\n"):format(Markdown.md_escape_cell(tostring(r.response_code or "?"))))
 
   local response_headers = Markdown.response_headers_source(r)
   if response_headers then

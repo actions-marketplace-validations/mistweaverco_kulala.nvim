@@ -6,14 +6,18 @@
 
 [![Made with love][badge-made-with-love]][contributors]
 [![Discord][badge-discord]][discord]
+[![Development status][badge-development-status]][development-status]
+[![Our manifesto][badge-our-manifesto]][our-manifesto]
+[![Status of tests][badge-test-status]][link-test-status]
+[![AI Policty][badge-ai-policy]][ai-policy]
 
-[![Main status](https://img.shields.io/github/actions/workflow/status/mistweaverco/kulala.nvim/tests.yml?label=main&branch=main&style=for-the-badge)](https://github.com/mistweaverco/kulala.nvim/actions/workflows/tests.yml)
-
-[Install](#install) • [Usage](https://kulala.app/usage) • [HTTP File Spec](https://kulala.app/usage/http-file-format)
+[Install](#install) •
+[Usage](https://kulala.app/usage) •
+[HTTP File Spec](https://kulala.app/usage/http-file-format)
 
 <p></p>
 
-A fully-featured 🤏 HTTP/GraphQL/gRPC/Websocket-client 🐼
+A fully-featured ⚡️ HTTP/GraphQL/gRPC/Websocket-client 🐼
 interface 🖥️ for Neovim ❤️,
 that supports the Jetbrains .http spec (with full scripting support).
 
@@ -23,27 +27,32 @@ It allows you to make HTTP requests from within Neovim.
 
 <p></p>
 
-<img width="1330" height="959" alt="demo" src="https://github.com/user-attachments/assets/a7b3b01f-0115-44dc-94d2-8abd4db6fb60" />
+![demo][demo-image]
 
-<p></p>
+# Other tools 🔧 from the Kulala 🐼 family 🌈
 
-# ••
+[Kulala CLI][kulala-cli] •
+[Kulala Formatter (and converter)][kulala-fmt] •
+[Kulala Desktop][kulala-desktop] •
+[Kulala for Visual Studio Code][kulala.vscode] •
+[Kulala Core][kulala-core]
+[Kulala Github Action][kulala-github-action]
 
-Kulala team loves feature requests and feedback,
-so if you have any ideas or suggestions, please let us know!  
-
-We'll be happy to implement them ❤️
+---
 
 </div>
 
 ## Features
   
-- Protocols: HTTP, gRPC, GraphQL, WebSocket, Streaming
+- Protocols: HTTP, gRPC, GraphQL, OpenAPI/Swagger explorer, WebSocket, Streaming
 - Variables: Environment, Document, Request, Dynamic, Prompt, `http-client.env` files
+- `$kulalaShared` / `$kulalaDefaultHeaders` in `http-client.env.json` for shared vars and default HTTP headers
 - Importing and running requests from external `*.http` files
 - Importing and saving request/response data to/from external files
 - JavaScript (Jetbrains compatible) Pre-request, Post-request, Conditional, Inline, External
   - TypeScript Pre-request, Post-request, Conditional, Inline, External
+  - `request.skip(message?)`, `request.abort(message?)`, `request.replay()` control flow
+  - `$kulala.client.global.headers` for persisted default headers (also via env files)
 - Authentication: Basic, Bearer, Digest, NTLM, OAuth2, Negotiate, AWS, SSL
 - Response formatting and live filtering
 - Assertions, automated testing and reporting
@@ -95,7 +104,7 @@ require("lazy").setup({
         path = nil,
         -- Subprocess timeout (ms) for kulala-core.
         -- Default is 60000 (1 minute).
-        -- nil disables the vim.system timeout.
+        -- 0 disables the vim.system timeout.
         timeout = 60000,
         -- Optional override for kulala-core persistence
         -- (cookies, OAuth, prompts).
@@ -108,11 +117,24 @@ require("lazy").setup({
         data_dir = nil,
         -- Optional override for download url
         download_url = "https://github.com/mistweaverco/kulala-core/releases/download/%s/%s",
+        -- "curl" or "wget" or full path to "curl" or "wget" executable.
+        download_tool = "curl",
       },
       -- Restore request history and UI after sourcing a vim session.
       -- Requires `set sessionoptions+=globals` in your Neovim config.
       session = {
         restore = true,
+      },
+      treesitter = {
+        -- enable/disable kulala.nvim own
+        -- handling of tree-sitter parser and queries for HTTP scripts
+        -- like downloading, building, and installing the parser and queries.
+        -- disable to manage the parser and queries yourself.
+        enable = true,
+        -- path to tree-sitter CLI, if not in PATH
+        -- if enable is false, this is not used
+        -- required for building the parser from the included grammar
+        cli_path = "tree-sitter",
       },
       -- dev, test, prod, can be anything
       -- see: https://learn.microsoft.com/en-us/aspnet/core/test/http-files?view=aspnetcore-8.0#environment-files
@@ -131,7 +153,7 @@ require("lazy").setup({
       ui = {
         -- display mode: possible values: "split", "float"
         display_mode = "split",
-        -- split direction: possible values: "above", "right", "below", "left"
+        -- split direction: possible values: "above", "right", "below", "left", fun(): "above"|"right"|"below"|"left"
         split_direction = "right",
         -- window options to override win_config: width/height/split/vertical.., buffer/window options
         win_opts = { bo = {}, wo = {} }, ---@type kulala.ui.win_config
@@ -306,6 +328,39 @@ require("lazy").setup({
       ]]
 
       kulala_keymaps_prefix = "",
+
+      -- Forward script console output (`console.*`, `client.log`, skip/abort messages)
+      -- to vim.notify. Set to false to disable.
+      script_console_notify = true,
+      --[[
+        {
+          title = "kulala",
+          notify = function(message, level, opts, entry)
+            vim.notify(message, level, opts)
+          end,
+        }
+      ]]
+
+      -- OpenAPI explorer panel keymaps (see docs or lua/kulala/config/keymaps.lua)
+      openapi_panel_keymaps = true,
+
+      -- OpenAPI explorer split, fold signs, and highlight groups
+      openapi_panel = {
+        split = "right",
+        signs = { folded = ">", expanded = "v" },
+        highlights = {
+          section = "Title",
+          operation = "Function",
+          parameter = "Identifier",
+          response = "Number",
+          schema = "Type",
+          try_it_out = "String",
+          description = "Comment",
+          badge = "Comment",
+          sign = "Special",
+          value = "Constant",
+        },
+      },
     },
   },
 })
@@ -346,5 +401,20 @@ HTTP requests from within Neovim.
 [discord]: https://mistweaverco.com/discord
 [badge-made-with-love]: https://mistweaverco.com/assets/badges/made-with-love.svg
 [contributors]: https://github.com/mistweaverco/kulala.nvim/graphs/contributors
+[badge-test-status]: https://img.shields.io/github/actions/workflow/status/mistweaverco/kulala.nvim/tests.yml?label=main&branch=main&style=for-the-badge
+[link-test-status]: https://github.com/mistweaverco/kulala.nvim/actions/workflows/tests.yml
 [rest-nvim]: https://github.com/rest-nvim/rest.nvim
 [curl-nvim]: https://github.com/oysandvik94/curl.nvim
+[kulala-cli]: https://github.com/mistweaverco/kulala-cli
+[kulala-fmt]: https://github.com/mistweaverco/kulala-fmt
+[kulala-desktop]: https://github.com/mistweaverco/kulala-desktop
+[kulala.vscode]: https://github.com/mistweaverco/kulala.vscode
+[kulala-core]: https://github.com/mistweaverco/kulala-core
+[kulala-github-action]: https://github.com/mistweaverco/kulala-github-action
+[demo-image]: https://github.com/user-attachments/assets/a7b3b01f-0115-44dc-94d2-8abd4db6fb60
+[badge-development-status]: https://mistweaverco.com/assets/badges/development-status.svg
+[development-status]: https://mistweaverco.com/roadmap?filter=kulala.nvim
+[badge-ai-policy]: https://mistweaverco.com/assets/badges/ai-policy.svg
+[ai-policy]: https://mistweaverco.com/ai-policy
+[badge-our-manifesto]: https://mistweaverco.com/assets/badges/our-manifesto.svg
+[our-manifesto]: https://mistweaverco.com/manifesto

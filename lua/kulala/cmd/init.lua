@@ -13,6 +13,7 @@ local Json = require("kulala.utils.json")
 local KULALA_CORE = require("kulala.cmd.kulala_core_bridge")
 local Logger = require("kulala.logger")
 local Markdown = require("kulala.ui.markdown")
+local SCRIPT_CONSOLE_NOTIFY = require("kulala.script_console_notify")
 local UI_utils = require("kulala.ui.utils")
 
 local M = {}
@@ -298,6 +299,7 @@ local function apply_script_console_to_response(request_status, request, respons
     return
   end
   response.script_console = lines
+  SCRIPT_CONSOLE_NOTIFY.emit(lines)
   local request_file = (response.file and response.file ~= "") and response.file
     or (response.buf_name and response.buf_name ~= "") and response.buf_name
     or nil
@@ -379,6 +381,15 @@ local function request_response_id(buf, request)
 end
 
 local function truncate_body(response)
+  if response._kulala_body_type == "binary" then
+    if type(response._kulala_binary) == "table" and type(response._kulala_binary.note) == "string" then
+      local note = response._kulala_binary.note
+      if response._kulala_image_path then note = note .. "\nPath: " .. response._kulala_image_path end
+      return note
+    end
+    return response.body_raw ~= "" and response.body_raw or "Binary response body"
+  end
+
   local max_size = CONFIG.get().ui.max_response_size
 
   if vim.fn.getfsize(GLOBALS.BODY_FILE) > max_size then
@@ -489,6 +500,8 @@ local function save_response(request_status, parsed_request)
     _kulala_verbose_trace = parsed_request._kulala_verbose_trace,
     _kulala_body_type = request_status._kulala_body_type,
     _kulala_media_type = request_status._kulala_media_type,
+    _kulala_binary = request_status._kulala_binary,
+    _kulala_image_path = request_status._kulala_image_path,
   }
 
   parsed_request._kulala_redirect_chain = nil
@@ -501,8 +514,10 @@ local function save_response(request_status, parsed_request)
   response.json = Json.parse(response.body) or {}
   response.errors = inject_payload(response.errors, parsed_request)
 
-  if #response.body == 0 and response.method ~= "GRPC" then response.headers = "Content-Type: text/plain" end
-  if #response.body == 0 then response.body = "No response body (check Verbose output)" end
+  if response._kulala_body_type ~= "binary" then
+    if #response.body == 0 and response.method ~= "GRPC" then response.headers = "Content-Type: text/plain" end
+    if #response.body == 0 then response.body = "No response body (check Verbose output)" end
+  end
 
   table.insert(responses, response)
 
@@ -511,6 +526,7 @@ end
 
 local function process_response(request_status, parsed_request, callback)
   local response = save_response(request_status, parsed_request)
+  request_status._kulala_response_id = response.id
 
   process_metadata(parsed_request, response)
   process_internal(parsed_request)
@@ -537,20 +553,23 @@ local function process_errors(request, request_status, processing_errors)
     request_status.errors = ("%s\nRequest timed out (%s ms)"):format(request_status.errors or "", tostring(t))
   end
 
-  local message = ("Errors in request %s at line: %s\n%s"):format(
-    request.url,
-    request.show_icon_line_number or "-",
-    request_status.errors or ""
-  )
-
-  Logger.error(message, 2)
-  if processing_errors then Logger.error(processing_errors, 2, { report = true }) end
-
   request_status.errors = processing_errors and request_status.errors .. "\n" .. processing_errors
     or request_status.errors
 
   local response = save_response(request_status, request)
+  request_status._kulala_response_id = response.id
   apply_script_console_to_response(request_status, request, response)
+
+  local skip_logger = request_status._kulala_aborted == true and SCRIPT_CONSOLE_NOTIFY.enabled()
+  if not skip_logger then
+    local message = ("Errors in request %s at line: %s\n%s"):format(
+      request.url,
+      request.show_icon_line_number or "-",
+      request_status.errors or ""
+    )
+    Logger.error(message, 2)
+    if processing_errors then Logger.error(processing_errors, 2, { report = true }) end
+  end
 end
 
 ---@param advance_queue? boolean when false, do not advance the request queue (multi-response batch)
@@ -585,6 +604,8 @@ end
 
 local handle_response = vim.schedule_wrap(handle_response_impl)
 
+---@param request DocumentRequest
+---@return DocumentRequest|"empty"|"skipped"|nil
 local function parse_request(request)
   if not request._kulala_core then
     Logger.error("Request is not configured for kulala-core", 1)
@@ -599,15 +620,52 @@ end
 ---@param target DocumentRequest
 local function kulala_core_apply_sent_request(item, target)
   local sent = item.request
-  if type(sent) ~= "table" then return end
+  if type(sent) ~= "table" and type(item.url) ~= "string" then return end
 
-  if type(sent.method) == "string" and sent.method ~= "" then target.method = sent.method end
-  if type(sent.url) == "string" and vim.trim(sent.url) ~= "" then target._kulala_sent_url = sent.url end
-  if type(sent.headers) == "table" then target.headers = sent.headers end
-  if type(sent.body) == "string" then target.body = sent.body end
-  if type(item.url) == "string" and vim.trim(item.url) ~= "" then target._kulala_final_url = item.url end
+  if type(sent) == "table" then
+    if type(sent.method) == "string" and sent.method ~= "" then target.method = sent.method end
+    if type(sent.url) == "string" and vim.trim(sent.url) ~= "" then target._kulala_sent_url = sent.url end
+    if type(sent.headers) == "table" then target.headers = sent.headers end
+    if type(sent.body) == "string" then target.body = sent.body end
+  end
+  if type(item.url) == "string" and vim.trim(item.url) ~= "" then
+    target._kulala_final_url = item.url
+    target.url = item.url
+  end
 end
 
+local function format_byte_size(bytes)
+  bytes = tonumber(bytes) or 0
+  if bytes < 1024 then return ("%d B"):format(bytes) end
+  if bytes < 1024 * 1024 then return ("%.1f KB"):format(bytes / 1024) end
+  return ("%.1f MB"):format(bytes / (1024 * 1024))
+end
+
+local function media_type_extension(media_type)
+  local mt = (media_type or ""):lower()
+  if mt == "image/png" then return ".png" end
+  if mt == "image/jpeg" or mt == "image/jpg" then return ".jpg" end
+  if mt == "image/gif" then return ".gif" end
+  if mt == "image/webp" then return ".webp" end
+  if mt == "image/bmp" then return ".bmp" end
+  if mt == "image/svg+xml" then return ".svg" end
+  if mt:find("^image/") then return ".img" end
+  return ".bin"
+end
+
+---@param body table
+---@return string
+local function binary_body_note(body)
+  local media_type = body.mediaType or "application/octet-stream"
+  local size = format_byte_size(body.byteLength)
+  if type(media_type) == "string" and media_type:lower():find("^image/", 1, false) then
+    return ("Image response (%s, %s)"):format(media_type, size)
+  end
+  return ("Binary response body (%s, %s)"):format(media_type, size)
+end
+
+---@param body table|string|nil
+---@return string
 local function kulala_core_body_text(body)
   if type(body) == "table" and body.type == "json" then
     if type(body.formatted) == "string" then return body.formatted end
@@ -615,6 +673,7 @@ local function kulala_core_body_text(body)
     return encoded or vim.inspect(body.content)
   end
   if type(body) == "table" and body.type == "text" then return body.content or "" end
+  if type(body) == "table" and body.type == "binary" then return binary_body_note(body) end
   if type(body) == "string" then return body end
   return ""
 end
@@ -630,6 +689,18 @@ local function kulala_core_display_body(item)
   return kulala_core_body_text(item.body), nil
 end
 
+---@param body_obj table
+---@return string|nil path
+local function write_binary_temp_file(body_obj)
+  if type(body_obj) ~= "table" or body_obj.type ~= "binary" or body_obj.encoding ~= "base64" then return nil end
+  if type(body_obj.content) ~= "string" or body_obj.content == "" then return nil end
+  local ok, decoded = pcall(vim.base64.decode, body_obj.content)
+  if not ok or type(decoded) ~= "string" then return nil end
+  local path = vim.fn.tempname() .. media_type_extension(body_obj.mediaType)
+  if not FS.write_file(path, decoded, false, true) then return nil end
+  return path
+end
+
 local function kulala_core_headers_text(headers)
   local lines = {}
   for k, v in pairs(headers or {}) do
@@ -639,10 +710,42 @@ local function kulala_core_headers_text(headers)
   return table.concat(lines, "\n") .. "\n\n"
 end
 
+---@param result table
+---@return table|nil binary_meta `{ content, encoding, byteLength, mediaType?, path? }`
 local function write_kulala_core_response_files(result)
-  local display_text = kulala_core_display_body(result)
-  FS.write_file(GLOBALS.BODY_FILE, display_text)
+  local display_text, body_obj = kulala_core_display_body(result)
+  local binary_meta = nil
+
+  if type(body_obj) == "table" and body_obj.type == "binary" and body_obj.encoding == "base64" then
+    local ok, decoded = pcall(vim.base64.decode, body_obj.content)
+    if ok and type(decoded) == "string" then
+      FS.write_file(GLOBALS.BODY_FILE, decoded, false, true)
+    else
+      FS.write_file(GLOBALS.BODY_FILE, display_text)
+    end
+    local path = write_binary_temp_file(body_obj)
+    binary_meta = {
+      content = body_obj.content,
+      encoding = body_obj.encoding,
+      byteLength = body_obj.byteLength,
+      mediaType = body_obj.mediaType,
+      path = path,
+      note = display_text,
+    }
+  else
+    FS.write_file(GLOBALS.BODY_FILE, display_text)
+  end
+
   FS.write_file(GLOBALS.HEADERS_FILE, kulala_core_headers_text(result.headers))
+  return binary_meta
+end
+
+---@param binary_meta table|nil
+---@return table|nil
+---@return string|nil
+local function binary_fields_from_meta(binary_meta)
+  if type(binary_meta) ~= "table" then return nil, nil end
+  return binary_meta, binary_meta.path
 end
 
 local function kulala_core_stats_stdout(result)
@@ -659,20 +762,52 @@ local function kulala_core_stats_stdout(result)
 end
 
 ---Matches kulala-core KulalaPromptResponse (`prompt` or oauth/custom identifiers).
----@param first table|nil
+---@param item table|nil
 ---@return boolean
-local function kulala_core_result_is_prompt(first)
-  if type(first) ~= "table" then return false end
-  if first.prompt == true then return true end
+local function kulala_core_result_is_prompt(item)
+  if type(item) ~= "table" then return false end
+  if item.prompt == true then return true end
   if
-    type(first.promptId) == "string"
-    and first.promptId ~= ""
-    and type(first.promptType) == "string"
-    and first.promptType ~= ""
+    type(item.promptId) == "string"
+    and item.promptId ~= ""
+    and type(item.promptType) == "string"
+    and item.promptType ~= ""
   then
     return true
   end
   return false
+end
+
+---@param data table[]
+---@return table|nil
+local function kulala_core_find_first_prompt(data)
+  for _, item in ipairs(data) do
+    if kulala_core_result_is_prompt(item) then return item end
+  end
+  return nil
+end
+
+---@param data table[]
+---@return table[]
+local function kulala_core_completed_before_prompt(data)
+  for i, item in ipairs(data) do
+    if kulala_core_result_is_prompt(item) then
+      if i <= 1 then return {} end
+      local out = {}
+      for j = 1, i - 1 do
+        out[j] = data[j]
+      end
+      return out
+    end
+  end
+  return {}
+end
+
+---@param item table
+---@return string|nil
+local function kulala_core_prompt_block_name(item)
+  if type(item.blockName) == "string" and vim.trim(item.blockName) ~= "" then return vim.trim(item.blockName) end
+  return nil
 end
 
 ---Queue tasks run inside `vim.schedule`; calling `input()` there often returns immediately without a prompt.
@@ -759,6 +894,38 @@ local function kulala_core_run_targets(parsed_request)
   return { parsed_request }
 end
 
+---@param console table|nil kulala-core scriptConsole
+---@return string
+local function kulala_core_script_console_messages(console)
+  if type(console) ~= "table" then return "" end
+  local lines = {}
+  for _, entry in ipairs(console) do
+    if type(entry) == "table" then
+      local msg = entry.message or entry["message"]
+      if type(msg) == "string" and msg ~= "" then
+        table.insert(lines, msg)
+      elseif msg ~= nil then
+        table.insert(lines, tostring(msg))
+      end
+    end
+  end
+  return table.concat(lines, "\n")
+end
+
+---Body text for skip/abort: prefer core body, else join script logs + footer.
+---@param item table
+---@param console table|nil
+---@param footer string
+---@return string
+local function kulala_core_control_flow_body(item, console, footer)
+  local display = kulala_core_display_body(item)
+  if display ~= "" then return display end
+  local logs = kulala_core_script_console_messages(console)
+  if logs ~= "" and footer ~= "" then return logs .. "\n\n" .. footer end
+  if logs ~= "" then return logs end
+  return footer
+end
+
 ---@param item table kulala-core result entry
 ---@param targets DocumentRequest[]
 ---@param index number 1-based index in the batch
@@ -781,6 +948,28 @@ local function kulala_core_deliver_result(item, target, duration_wall, callback,
   save_replay_snapshot(target)
 
   if item.success == true and item.skipped == true then
+    local console = kulala_core_script_console(item)
+    target._kulala_script_console = console
+    local footer = (type(item.message) == "string" and item.message ~= "") and item.message
+      or "Request skipped by script"
+    local body = kulala_core_control_flow_body(item, console, footer)
+    handle_response_impl({
+      code = 0,
+      stdout = "",
+      errors = "",
+      duration = duration_wall,
+      _kulala_body_type = "text",
+      _kulala_media_type = "text/plain",
+      _kulala_body_snapshot = body,
+      _kulala_headers_snapshot = "Content-Type: text/plain\n\n",
+      _kulala_script_console = console,
+    }, target, callback, advance_queue, invoke_ui_callback)
+    return
+  end
+
+  if item.success == true and item.openapiUi == true and type(item.openapi) == "table" then
+    local OPENAPI_PANEL = require("kulala.ui.openapi_panel")
+    OPENAPI_PANEL.open(item.openapi, target, DB.get_current_buffer())
     if advance_queue ~= false then M.queue:run_next() end
     if invoke_ui_callback ~= false then callback(true, duration_wall, INLAY.icon_line_for_request(target), nil) end
     return
@@ -791,7 +980,8 @@ local function kulala_core_deliver_result(item, target, duration_wall, callback,
     target._kulala_script_console = console
     if item.httpCompleted == true and type(item.status) == "number" then
       kulala_core_apply_sent_request(item, target)
-      write_kulala_core_response_files(item)
+      local binary_meta = write_kulala_core_response_files(item)
+      local binary, image_path = binary_fields_from_meta(binary_meta)
       local duration_ns = math.floor((item.timings and item.timings.total or 0) * 1e6)
       handle_response_impl({
         code = 1,
@@ -804,15 +994,28 @@ local function kulala_core_deliver_result(item, target, duration_wall, callback,
         _kulala_raw_body_snapshot = type(item.rawBody) == "string" and item.rawBody or nil,
         _kulala_headers_snapshot = kulala_core_headers_text(item.headers),
         _kulala_script_console = console,
+        _kulala_binary = binary,
+        _kulala_image_path = image_path,
       }, target, callback, advance_queue, invoke_ui_callback)
       return
     end
+    if type(item.request) == "table" then kulala_core_apply_sent_request(item, target) end
+    if type(item.verboseTrace) == "string" and item.verboseTrace ~= "" then
+      target._kulala_verbose_trace = item.verboseTrace
+    end
+    local err = item.error or "request failed"
+    local body = kulala_core_control_flow_body(item, console, err)
     handle_response_impl({
       code = 1,
-      errors = item.error or "request failed",
+      errors = body,
       stdout = "",
       duration = duration_wall,
+      _kulala_body_type = "text",
+      _kulala_media_type = "text/plain",
+      _kulala_body_snapshot = body,
+      _kulala_headers_snapshot = "Content-Type: text/plain\n\n",
       _kulala_script_console = console,
+      _kulala_aborted = item.aborted == true,
     }, target, callback, advance_queue, invoke_ui_callback)
     return
   end
@@ -866,7 +1069,8 @@ local function kulala_core_deliver_result(item, target, duration_wall, callback,
     return
   end
 
-  write_kulala_core_response_files(item)
+  local binary_meta = write_kulala_core_response_files(item)
+  local binary, image_path = binary_fields_from_meta(binary_meta)
   local duration_ns = math.floor((item.timings and item.timings.total or 0) * 1e6)
 
   local console = kulala_core_script_console(item)
@@ -893,6 +1097,8 @@ local function kulala_core_deliver_result(item, target, duration_wall, callback,
     _kulala_jq_filter = type(item.jqFilter) == "string" and item.jqFilter ~= "" and item.jqFilter or nil,
     _kulala_headers_snapshot = kulala_core_headers_text(item.headers),
     _kulala_script_console = console,
+    _kulala_binary = binary,
+    _kulala_image_path = image_path,
   }, target, callback, advance_queue, invoke_ui_callback)
 end
 
@@ -912,18 +1118,24 @@ local function kulala_core_deliver_run_results(wrapper, parsed_request, duration
   end
 end
 
----@param parsed_request DocumentRequest
----@param callback function
----@param retry_depth number|nil
 local process_request_kulala_core
 
----@param wrapper table
+---@param wrapper table|nil
 ---@param parsed_request DocumentRequest
 ---@param callback function
 ---@param retry_depth number
 ---@param start_time number
 ---@param core_cwd string|nil
-local function finish_kulala_core_wrapper(wrapper, parsed_request, callback, retry_depth, start_time, core_cwd)
+---@param run_opts KulalaCoreRunOpts|nil
+local function finish_kulala_core_wrapper(
+  wrapper,
+  parsed_request,
+  callback,
+  retry_depth,
+  start_time,
+  core_cwd,
+  run_opts
+)
   local duration_wall = vim.uv.hrtime() - start_time
 
   if not wrapper or type(wrapper) ~= "table" then
@@ -949,8 +1161,7 @@ local function finish_kulala_core_wrapper(wrapper, parsed_request, callback, ret
   end
 
   local data = wrapper.data or {}
-  local first = data[1]
-  if not first then
+  if #data == 0 then
     handle_response({
       code = 1,
       errors = "kulala-core returned no result",
@@ -960,11 +1171,19 @@ local function finish_kulala_core_wrapper(wrapper, parsed_request, callback, ret
     return
   end
 
-  if kulala_core_result_is_prompt(first) then
-    if type(first.message) == "string" and vim.trim(first.message) ~= "" then
-      vim.notify(vim.trim(first.message), vim.log.levels.INFO)
+  local prompt_item = kulala_core_find_first_prompt(data)
+  if prompt_item then
+    local completed_before = kulala_core_completed_before_prompt(data)
+    if #completed_before > 0 then
+      kulala_core_deliver_run_results(
+        { type = "responses", data = completed_before },
+        parsed_request,
+        duration_wall,
+        callback
+      )
     end
-    local inputs = kulala_core_collect_prompt_inputs(first)
+
+    local inputs = kulala_core_collect_prompt_inputs(prompt_item)
     if not inputs then
       handle_response({
         code = 1,
@@ -974,7 +1193,7 @@ local function finish_kulala_core_wrapper(wrapper, parsed_request, callback, ret
       }, parsed_request, callback)
       return
     end
-    if not first.promptId or first.promptId == "" then
+    if not prompt_item.promptId or prompt_item.promptId == "" then
       handle_response({
         code = 1,
         errors = "kulala-core prompt missing promptId",
@@ -986,7 +1205,7 @@ local function finish_kulala_core_wrapper(wrapper, parsed_request, callback, ret
 
     KULALA_CORE.continue_async(
       {
-        promptId = first.promptId,
+        promptId = prompt_item.promptId,
         inputs = inputs,
       },
       core_cwd,
@@ -1012,9 +1231,13 @@ local function finish_kulala_core_wrapper(wrapper, parsed_request, callback, ret
             }, parsed_request, callback)
             return
           end
-          local done_msg = type(cont_first.message) == "string" and vim.trim(cont_first.message) or ""
-          if done_msg ~= "" then vim.notify(done_msg, vim.log.levels.INFO) end
-          process_request_kulala_core(parsed_request, callback, retry_depth + 1)
+
+          local retry_run_opts = vim.deepcopy(run_opts or parsed_request._kulala_replay_run_opts or {})
+          local block_name = kulala_core_prompt_block_name(prompt_item)
+          if #completed_before > 0 and block_name then
+            retry_run_opts.limit = { { filter = "name", name = block_name } }
+          end
+          process_request_kulala_core(parsed_request, callback, retry_depth + 1, retry_run_opts)
         end)
       end
     )
@@ -1026,7 +1249,8 @@ end
 
 ---@param parsed_request DocumentRequest
 ---@param callback function
----@param retry_depth number|nil after `continue`, re-run run (cap recursion)
+---@param retry_depth? number
+---@param run_opts? KulalaCoreRunOpts
 process_request_kulala_core = function(parsed_request, callback, retry_depth, run_opts)
   retry_depth = retry_depth or 0
   if run_opts then parsed_request._kulala_replay_run_opts = run_opts end
@@ -1056,7 +1280,7 @@ process_request_kulala_core = function(parsed_request, callback, retry_depth, ru
         }, parsed_request, callback)
         return
       end
-      finish_kulala_core_wrapper(wrapper, parsed_request, callback, retry_depth, start_time, core_cwd)
+      finish_kulala_core_wrapper(wrapper, parsed_request, callback, retry_depth, start_time, core_cwd, run_opts)
     end)
   end)
 end
@@ -1071,7 +1295,7 @@ function process_request(request, callback, run_opts)
   local parsed_request = parse_request(request)
 
   if parsed_request == "empty" or parsed_request == "skipped" then return M.queue:run_next() end
-  if not parsed_request then
+  if type(parsed_request) ~= "table" then
     callback(false, 0, request.start_line)
     return config.halt_on_error and M.queue:reset() or M.queue:run_next()
   end
@@ -1161,6 +1385,15 @@ M.run_parser = function(requests, line_nr, callback, run_opts)
   end
 
   M.queue:run_next()
+end
+
+---Deliver a single kulala-core result item (e.g. OpenAPI operation run) into the response UI.
+---@param item table
+---@param target DocumentRequest
+---@param callback? function
+function M.deliver_core_result(item, target, callback)
+  callback = callback or function() end
+  kulala_core_deliver_result(item, target, 0, callback, false, true)
 end
 
 return M

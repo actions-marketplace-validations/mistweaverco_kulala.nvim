@@ -60,6 +60,20 @@ local function code_actions_http()
       end,
     },
     {
+      group = "OpenAPI",
+      title = "Open OpenAPI explorer",
+      command = "open_openapi_explorer",
+      fn = Kulala.open_openapi_explorer,
+    },
+    {
+      group = "OpenAPI",
+      title = "Clear OpenAPI schema cache",
+      command = "clear_openapi_schema_cache",
+      fn = function()
+        Kulala.clear_openapi_schema_cache()
+      end,
+    },
+    {
       group = "Environment",
       title = "Clear globals",
       command = "clear_globals",
@@ -171,11 +185,13 @@ local function initialize(attached_buf)
 
     if Fs.is_http_script_file(ft, attached_buf) then
       capabilities = {
+        inlayHintProvider = true,
         completionProvider = { triggerCharacters = trigger_chars },
         hoverProvider = true,
       }
     elseif ft == "http" or ft == "rest" then
       capabilities = {
+        inlayHintProvider = true,
         codeActionProvider = true,
         documentSymbolProvider = true,
         hoverProvider = true,
@@ -280,6 +296,17 @@ local function new_server(attached_buf)
           Bridge.lsp_symbols_async(state.current_buffer, function(res, err)
             if not res then
               Logger.debug("kulala-core lsp_symbols failed: " .. tostring(err))
+              res = {}
+            end
+            handler(nil, res)
+          end)
+          return
+        end
+
+        if method == "textDocument/inlayHint" then
+          Bridge.lsp_inlay_hints_async(state.current_buffer, params, function(res, err)
+            if not res then
+              Logger.debug("kulala-core lsp_inlay_hints failed: " .. tostring(err))
               res = {}
             end
             handler(nil, res)

@@ -17,10 +17,6 @@ local WS_INPUT = require("kulala.ui.ws_input")
 
 local M = {}
 
----@class kulala.ui.win_config: vim.api.keyset.win_config
----@field bo table<string, any> Buffer options
----@field wo table<string, any> Window options
-
 local is_initialized = function()
   return CONFIG.get().initialized
 end
@@ -75,10 +71,24 @@ local function set_current_response_by_id(db, response_id)
   return false
 end
 
+---Show the response for a completed request (by id, or the newest entry after `previous_response_pos`).
+---@param response_id? string
+---@param previous_response_pos? number
+M.advance_to_response = function(response_id, previous_response_pos)
+  local db = DB.global_update()
+  if set_current_response_by_id(db, response_id) then return end
+  local prev = previous_response_pos or db.previous_response_pos or 0
+  local first_new = math.max(1, prev + 1)
+  set_current_response(math.min(first_new, #db.responses))
+end
+
 M.close_kulala_buffer = function()
   WS_INPUT.close()
   local buf = get_kulala_buffer()
-  if buf then vim.api.nvim_buf_delete(buf, { force = true }) end
+  if buf then
+    pcall(require("kulala.ui.image").clear, buf)
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end
 end
 
 -- Create an autocmd to delete the buffer when the window is closed
@@ -89,6 +99,7 @@ local function set_maps_autocommands(buf)
     group = vim.api.nvim_create_augroup("kulala_window_closed", { clear = true }),
     buffer = buf,
     callback = function()
+      pcall(require("kulala.ui.image").clear, buf)
       if vim.fn.bufexists(buf) > 0 then vim.api.nvim_buf_delete(buf, { force = true }) end
     end,
   })
@@ -153,6 +164,44 @@ local function set_buffer_contents(buf, contents, filetype)
   pcall(vim.treesitter.start, buf, filetype)
 end
 
+---Body view: keep ft as `kulala_ui`, but parse only the response body as json/xml/html
+---so treesitter features (e.g. incremental selection) work despite the request summary.
+---@param buf integer
+---@param lang string
+local function apply_body_treesitter(buf, lang)
+  if type(lang) ~= "string" or lang == "" or lang == "text" then return end
+
+  -- Make get_parser(buf) resolve to the body language while ft stays kulala_ui.
+  vim.treesitter.language.register(lang, "kulala_ui")
+  pcall(vim.treesitter.stop, buf)
+  pcall(vim.treesitter.start, buf, lang)
+
+  if not CONFIG.get().ui.show_request_summary then return end
+
+  local ok, parser = pcall(vim.treesitter.get_parser, buf, lang)
+  if not ok or not parser then return end
+
+  local start_row = 4 -- request summary is always 4 lines when enabled
+  local line_count = vim.api.nvim_buf_line_count(buf)
+  if line_count <= start_row then return end
+
+  -- Range4: { start_row, start_col, end_row, end_col } (end exclusive by row when col is 0)
+  pcall(function()
+    ---@diagnostic disable-next-line: invisible
+    parser:set_included_regions { { { start_row, 0, line_count, 0 } } }
+    parser:parse(true)
+  end)
+end
+
+---Restore default kulala_ui → markdown mapping after body view overrode it.
+---@param buf integer
+---@param filetype string
+local function restore_ui_treesitter(buf, filetype)
+  vim.treesitter.language.register("markdown", "kulala_ui")
+  pcall(vim.treesitter.stop, buf)
+  pcall(vim.treesitter.start, buf, filetype)
+end
+
 local function open_kulala_window(buf)
   local config = CONFIG.get()
   local win_config
@@ -160,7 +209,11 @@ local function open_kulala_window(buf)
   local win = get_kulala_window()
   if win then return win end
 
-  local request_win = vim.fn.win_findbuf(DB.get_current_buffer())[1] or vim.api.nvim_get_current_win()
+  local OPENAPI_PANEL = require("kulala.ui.openapi_panel")
+  local explorer_win = OPENAPI_PANEL.get_window()
+  local request_win = explorer_win and vim.api.nvim_win_is_valid(explorer_win) and explorer_win
+    or vim.fn.win_findbuf(DB.get_current_buffer())[1]
+    or vim.api.nvim_get_current_win()
 
   local win_opts = vim.deepcopy(config.ui.win_opts or {})
   local wo = win_opts.wo or {}
@@ -193,7 +246,7 @@ local function open_kulala_window(buf)
     local split = config.split_direction == "vertical" and "right"
       or config.split_direction == "horizontal" and "below"
       or config.split_direction
-    win_config = { split = split, win = request_win }
+    win_config = { split = type(split) == "function" and split() or split, win = request_win }
   end
 
   win_config = vim.tbl_extend("force", win_config, win_opts)
@@ -251,9 +304,18 @@ local function show(contents, filetype, mode)
   if MARKDOWN_VIEWS[mode] then contents = require("kulala.ui.markdown").normalize_headings(contents) end
   local buf = open_kulala_buffer(buf_ft)
 
+  local Image = require("kulala.ui.image")
+  Image.clear(buf)
+
   restore_readonly_buffer(buf)
   set_buffer_contents(buf, contents, buf_ft)
   if mode ~= "report" then REPORT.set_response_summary(buf) end
+  if mode == "body" then
+    apply_body_treesitter(buf, buf_ft)
+  else
+    -- Body view may have remapped kulala_ui → json/xml/html; put markdown back.
+    restore_ui_treesitter(buf, buf_ft)
+  end
   lock_buffer_readonly(buf)
 
   local win = open_kulala_window(buf)
@@ -264,21 +326,41 @@ local function show(contents, filetype, mode)
   WINBAR.toggle_winbar_tab(buf, win, mode)
   CONFIG.options.default_view = mode
 
+  if mode == "body" and CONFIG.get().ui.show_images ~= false then
+    local response = get_current_response()
+    local media = response and response._kulala_media_type
+    local path = response and response._kulala_image_path
+    if
+      response
+      and response._kulala_body_type == "binary"
+      and type(media) == "string"
+      and media:lower():find("^image/", 1, false)
+      and type(path) == "string"
+      and path ~= ""
+    then
+      vim.schedule(function()
+        if not vim.api.nvim_buf_is_valid(buf) then return end
+        -- Blank anchor line below the note so fallback (WezTerm) does not cover the path text.
+        restore_readonly_buffer(buf)
+        local last = vim.api.nvim_buf_line_count(buf)
+        vim.api.nvim_buf_set_lines(buf, last, last, false, { "" })
+        lock_buffer_readonly(buf)
+        Image.show(buf, path, {
+          binary = response._kulala_binary,
+          pos = { vim.api.nvim_buf_line_count(buf), 0 },
+        })
+      end)
+    end
+  end
+
   show_progress()
 end
 
----Prefer kulala-core `body.type` for JSON; otherwise resolve via `mediaType` or
----response headers.
+---Prefer kulala-core `body.type` / `mediaType` for response body language.
 ---@param r Response
 ---@return string ft type to determine syntax highlighting
 local function get_ft_from_kulala_core(r)
-  if not r._kulala_core or not r._kulala_body_type then return "text" end
-  if r._kulala_body_type == "json" then return "json" end
-  if type(r._kulala_media_type) == "string" and r._kulala_media_type ~= "" then
-    if r._kulala_media_type:find("json") then return "json" end
-    if r._kulala_media_type:find("xml") then return "xml" end
-  end
-  return "text"
+  return require("kulala.ui.markdown").get_body_ft(r._kulala_media_type, r._kulala_body_type)
 end
 
 ---Resolve body text and syntax filetype (formatting is done in kulala-core).
@@ -552,7 +634,7 @@ M.show_help = function()
   )
 
   vim.iter(keymaps):each(function(keymap, value)
-    table.insert(help, ("  - %s: `%s`"):format(keymap, value[1]))
+    if value then table.insert(help, ("  - %s: `%s`"):format(keymap, value[1])) end
   end)
 
   Float.create(help, {

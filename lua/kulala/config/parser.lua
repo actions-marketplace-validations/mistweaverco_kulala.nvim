@@ -11,15 +11,27 @@ local filetypes = { "http", "rest" }
 local queries_dir = vim.fs.joinpath(vim.fn.stdpath("data"), "site", "queries")
 local parsers_dir = vim.fs.joinpath(vim.fn.stdpath("data"), "site", "parser")
 local target_parser_ext = vim.fn.has("win32") == 1 and "dll" or vim.fn.has("macunix") == 1 and "dylib" or "so"
-local parser_target_path = vim.fs.joinpath(parsers_dir, parser_name .. "." .. target_parser_ext)
 local query_target_dir = vim.fs.joinpath(queries_dir, parser_name)
 local site_dir = vim.fs.joinpath(vim.fn.stdpath("data"), "site")
 
 local parser_source_path = vim.fs.joinpath(vim.fn.stdpath("data"), "kulala.nvim", "tree-sitter-kulala-http")
 local parser_registered = false
 
+local function has_kulala_queries()
+  return #vim.api.nvim_get_runtime_file(vim.fs.joinpath("queries", parser_name, "*.scm"), true) > 0
+end
+
+local function has_kulala_parser()
+  return #vim.api.nvim_get_runtime_file(vim.fs.joinpath("parser", parser_name .. "." .. target_parser_ext), true) > 0
+end
+
 local function is_parser_ver_current()
-  return require("kulala.db").settings.parser_rev == Globals.TREESITTER_VERSION
+  local current_version = require("kulala.db").settings.parser_rev
+  if current_version == nil and has_kulala_parser() then
+    -- The parser is managed externally.
+    return true
+  end
+  return current_version == Globals.TREESITTER_VERSION
 end
 
 --- HACK:
@@ -38,7 +50,7 @@ local function sync_queries()
 end
 
 local function load_parser()
-  if not Fs.file_exists(parser_target_path) then return false end
+  if not has_kulala_parser() then return false end
   return vim.treesitter.language.add(parser_name) == true
 end
 
@@ -47,7 +59,7 @@ M.register_parser = function()
   if not load_parser() then return end
   parser_registered = true
   -- kulala_http/*.scm live under tree-sitter-kulala-http/queries/
-  vim.opt.rtp:prepend(parser_source_path)
+  if Fs.dir_exists(parser_source_path) then vim.opt.rtp:prepend(parser_source_path) end
   ensure_site_rtp()
   sync_queries()
   vim.treesitter.language.register(parser_name, filetypes)
@@ -91,10 +103,11 @@ local function fetch_grammar(on_done)
 end
 
 local function build_parser(finish_progress_handler)
+  local config = require("kulala.config").get()
   Fs.ensure_dir_exists(parsers_dir)
   sync_queries()
   local output_path = vim.fs.joinpath(parsers_dir, parser_name .. "." .. target_parser_ext)
-  vim.system({ "tree-sitter", "build", "-o", output_path }, { cwd = parser_source_path }, function(obj)
+  vim.system({ config.treesitter.cli_path, "build", "-o", output_path }, { cwd = parser_source_path }, function(obj)
     if obj.code ~= 0 then
       vim.schedule(function()
         finish_progress_handler("Failed to build tree-sitter parser: " .. (obj.stderr or ""), false)
@@ -127,15 +140,13 @@ local function setup_tree_sitter()
   end)
 end
 
-local function has_kulala_parser()
-  return Fs.file_exists(parser_target_path) and Fs.dir_exists(query_target_dir)
-end
-
 M.is_up_to_date = function()
-  return has_kulala_parser() and is_parser_ver_current()
+  return has_kulala_parser() and has_kulala_queries() and is_parser_ver_current()
 end
 
 M.setup = function()
+  local config = require("kulala.config").get()
+  if not config.treesitter.enable then return end
   if not M.is_up_to_date() then
     setup_tree_sitter()
     return
