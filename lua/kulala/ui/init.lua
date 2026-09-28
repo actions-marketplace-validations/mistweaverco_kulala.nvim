@@ -307,6 +307,13 @@ local function show(contents, filetype, mode)
   local Image = require("kulala.ui.image")
   Image.clear(buf)
 
+  -- Suspend folding until the final parser (and body region) is in place: treesitter's
+  -- foldexpr caches the parser it first sees, so evaluating folds mid-update
+  -- (e.g. on the summary write) would bind them to a stale parser.
+  local fold_win = get_kulala_window()
+  local foldmethod = fold_win and vim.wo[fold_win].foldmethod
+  if fold_win then vim.wo[fold_win][0].foldmethod = "manual" end
+
   restore_readonly_buffer(buf)
   set_buffer_contents(buf, contents, buf_ft)
   if mode ~= "report" then REPORT.set_response_summary(buf) end
@@ -317,6 +324,8 @@ local function show(contents, filetype, mode)
     restore_ui_treesitter(buf, buf_ft)
   end
   lock_buffer_readonly(buf)
+
+  if fold_win and vim.wo[fold_win].foldmethod == "manual" then vim.wo[fold_win][0].foldmethod = foldmethod end
 
   local win = open_kulala_window(buf)
   local lnum = mode == "report" and vim.api.nvim_buf_line_count(buf) or 4
