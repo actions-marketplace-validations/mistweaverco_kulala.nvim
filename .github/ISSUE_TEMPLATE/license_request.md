@@ -15,11 +15,11 @@ and send you a license token. Please provide at least one of the following:
 - [ ] Discord Username: 
 
 ```
-gorillamoe
+YOUR DISCORD USERNAME HERE or N/A
 ```
 
 - [ ] Reddit Username: 
 
 ```
-gorilla-moe
+YOUR REDDIT USERNAME HERE or N/A
 ```
