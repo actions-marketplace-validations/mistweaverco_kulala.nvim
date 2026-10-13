@@ -42,6 +42,16 @@ It allows you to make HTTP requests from within Neovim.
 
 </div>
 
+## Kulala License Tokens
+
+> [!IMPORTANT]
+> Kulala-Core went private and closed-source,
+> All Kulala tools require a license token to run.
+>
+> To request a license token,
+> please open an issue using the [license request template].
+
+
 ## Features
   
 - Protocols: HTTP, gRPC, GraphQL, OpenAPI/Swagger explorer, WebSocket, Streaming
@@ -419,3 +429,4 @@ HTTP requests from within Neovim.
 [ai-policy]: https://the-dont-be-evil-company.com/ai-policy
 [badge-our-manifesto]: https://the-dont-be-evil-company.com/assets/badges/our-manifesto.svg
 [our-manifesto]: https://the-dont-be-evil-company.com/manifesto
+[license request template]: https://github.com/dont-be-evil-company/kulala.nvim/issues/new?template=license_request.md
