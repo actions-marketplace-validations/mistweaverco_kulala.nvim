@@ -604,6 +604,14 @@ local function download_file_async(url, output_path, progress_callback, callback
   end
 end
 
+local checksum_matches = function(file_path, expected_checksum)
+  if not vim.fn.filereadable(file_path) then return false end
+  local actual_checksum = IS_WINDOWS
+      and vim.fn.systemlist({ "CertUtil", "-hashfile", file_path, "SHA256" })[2]:gsub("%s+", "")
+    or vim.fn.systemlist({ "sha256sum", file_path })[1]:match("^(%w+)")
+  return actual_checksum == expected_checksum
+end
+
 ---Check if binary exists
 ---@return boolean exists Whether the binary file exists
 local function binary_exists()
@@ -641,8 +649,9 @@ M.install = function(version, callback)
   version = version or get_required_version()
   if version == "latest" then version = get_required_version() end
   version = version:gsub("^v", "")
+  local release_bin_name = M.get_release_bin_name()
   local download_url = require("kulala.config").get().kulala_core.download_url
-  local url = string.format(download_url, version, M.get_release_bin_name())
+  local url = string.format(download_url, version, release_bin_name)
   Logger.info("Downloading backend from URL: " .. url)
 
   local token, token_source = resolve_license_token()
@@ -657,6 +666,15 @@ M.install = function(version, callback)
 
   -- Download to temporary archive file
   local download_file_path = join_paths(bin_dir, M.get_release_bin_name() .. ".download")
+
+  -- check checksum
+  local checksums = require("kulala.globals.versions.backend_checksums")
+  local expected_checksum = checksums[release_bin_name]
+  if not expected_checksum then
+    Logger.error("No checksum found for " .. release_bin_name .. ". Cannot verify download integrity.")
+    if callback then callback(false) end
+    return
+  end
 
   -- Start timing from the beginning of download
   local start_time = vim.fn.reltime()
@@ -710,6 +728,10 @@ M.install = function(version, callback)
 
     local bin_path = join_paths(bin_dir, M.get_bin_name())
     if vim.fn.filereadable(download_file_path) == 1 then
+      if not checksum_matches(download_file_path, expected_checksum) then
+        if callback then callback() end
+        return
+      end
       -- make it executable
       if not IS_WINDOWS then vim.fn.system { "chmod", "+x", download_file_path } end
       -- Rename the downloaded file
@@ -751,11 +773,25 @@ local function finish_install(callback)
   local waiters = install_waiters
   install_waiters = {}
 
-  if binary_exists() and version_matches() then
-    if Parser.is_up_to_date() then Api.trigger("ready") end
-  else
-    Logger.error("Backend installation failed or binary is not accessible")
+  if not binary_exists() then
+    Logger.error("Backend installation failed: binary is not accessible")
+    return
   end
+  if
+    not checksum_matches(
+      M.get_bin_path(),
+      require("kulala.globals.versions.backend_checksums")[M.get_release_bin_name()]
+    )
+  then
+    Logger.error("Backend installation failed: checksum mismatch after installation")
+    return
+  end
+  if not version_matches() then
+    Logger.error("Backend installation failed: version mismatch after installation")
+    return
+  end
+
+  if Parser.is_up_to_date() then Api.trigger("ready") end
 
   if callback then callback() end
   for _, waiter in ipairs(waiters) do
