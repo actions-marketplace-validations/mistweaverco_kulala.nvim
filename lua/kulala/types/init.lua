@@ -54,6 +54,10 @@
 ---@field successHighlight string
 ---@field errorHighlight string
 
+---@class KulalaDefaultConfigUiResponseSearch
+---@field fuzzy boolean Search with fuzzy matching unless the query sets `fuzzy:`
+---@field default_query string Text prefilled in the response search prompt
+
 ---@class KulalaDefaultConfigUiPickersSnacks
 ---@field layout fun(): table
 
@@ -81,6 +85,7 @@
 ---@field show_images boolean
 ---@field report KulalaDefaultConfigUiReport
 ---@field scratchpad_default_contents string[]
+---@field response_search KulalaDefaultConfigUiResponseSearch
 ---@field pickers KulalaDefaultConfigUiPickers
 
 ---@class KulalaDefaultConfigLsp

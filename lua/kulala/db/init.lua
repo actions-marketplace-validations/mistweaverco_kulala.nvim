@@ -49,6 +49,8 @@ M.data = nil
 ---@field assert_output table
 ---@field assert_status boolean
 ---
+---@field history_id number|nil -- kulala-core request_history row id
+---
 ---@field file string -- path of the file of the request
 ---@field buf number
 ---@field buf_name string

@@ -89,6 +89,10 @@ M.search = function()
   require("kulala.ui.request_manager").open()
 end
 
+M.search_responses = function()
+  require("kulala.ui.response_manager").open()
+end
+
 M.scripts_clear_global = function(key_or_keys)
   KulalaCore.guard(function()
     local ok, err = KulalaCore.clear_globals(key_or_keys)

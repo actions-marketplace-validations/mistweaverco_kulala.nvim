@@ -45,6 +45,7 @@ GLOBAL AND FT KEYMAPS
       ["Replay the last request"] = { "r", function() require("kulala").replay() end, },
     
       ["Find request"] = { "f", function() require("kulala").search() end, ft = { "http", "rest" }, },
+      ["Search responses"] = { "H", function() require("kulala").search_responses() end, ft = { "http", "rest" }, },
       ["Jump to next request"] = { "n", function() require("kulala").jump_next() end, ft = { "http", "rest" }, },
       ["Jump to previous request"] = { "p", function() require("kulala").jump_prev() end, ft = { "http", "rest" }, },
     
@@ -61,6 +62,7 @@ KULALA UI KEYMAPS
 
 >lua
       ["Show headers"] = { "H", function() require("kulala.ui").show_headers() end, },
+      ["Search responses"] = { "s", function() require("kulala").search_responses() end, },
       ["Show body"] = { "B", function() require("kulala.ui").show_body() end, },
       ["Show headers and body"] = { "A", function() require("kulala.ui").show_headers_body() end, },
       ["Show verbose"] = { "V", function() require("kulala.ui").show_verbose() end, },

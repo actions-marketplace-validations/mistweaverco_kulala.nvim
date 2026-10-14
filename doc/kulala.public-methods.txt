@@ -105,6 +105,37 @@ It tries to load up a telescope prompt to select a file or fallback to using
 `vim.ui.select`.
 
 
+SEARCH_RESPONSES
+
+`require('kulala').search_responses()` opens a picker over responses stored in
+kulala-core's request history.
+
+The prompt is sent to kulala-core as the search query. Fuzzy matching is off
+unless the query starts with `fuzzy:1` or `fuzzy:true` (`fuzzy:0` /
+`fuzzy:false` turn it off). `ui.response_search.fuzzy` is the default when the
+query omits that flag. `ui.response_search.default_query` is prefilled until a
+query has been typed in this Neovim session. The last typed query is restored
+the next time the picker opens, and is gone after Neovim exits. Live pickers
+wait 200ms after the last keystroke before searching.
+
+Field filters are combined with AND:
+
+- `request.name:`
+- `request.body:`
+- `request.headers:` (header names and values)
+- `request.url:`
+- `request.scripts:` (pre-request script log)
+- `response.body:`
+- `response.headers:`
+- `response.scripts:` (post-request script log)
+
+Text without a field searches all of those fields and the request time. An
+empty prompt lists the newest history rows. Choosing a row opens that response.
+
+The picker uses fzf-lua, then snacks, then telescope, then `vim.ui.select`.
+The typed text is the kulala-core query. A second fuzzy filter does not hide a match whose label omits the keyword.
+
+
 JUMP_PREV
 
 `require('kulala').jump_prev()` jumps to the previous request.

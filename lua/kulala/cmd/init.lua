@@ -504,6 +504,7 @@ local function save_response(request_status, parsed_request)
     _kulala_core = parsed_request._kulala_core == true,
     _kulala_redirect_chain = parsed_request._kulala_redirect_chain,
     _kulala_verbose_trace = parsed_request._kulala_verbose_trace,
+    history_id = type(request_status._kulala_history_id) == "number" and request_status._kulala_history_id or nil,
     _kulala_body_type = request_status._kulala_body_type,
     _kulala_media_type = request_status._kulala_media_type,
     _kulala_binary = request_status._kulala_binary,
@@ -1122,6 +1123,7 @@ local function kulala_core_deliver_result(item, target, duration_wall, callback,
     _kulala_script_console = console,
     _kulala_binary = binary,
     _kulala_image_path = image_path,
+    _kulala_history_id = type(item.historyId) == "number" and item.historyId or nil,
   }, target, callback, advance_queue, invoke_ui_callback)
 end
 

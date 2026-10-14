@@ -9,28 +9,48 @@ fi
 
 BACKEND_VERSION_FILE="./lua/kulala/globals/versions/backend.lua"
 BACKEND_CHECKSUMS_FILE="./lua/kulala/globals/versions/backend_checksums.lua"
+CHECKSUM_URL="https://core.kulala.app/checksums/${1}"
 
-GH_ORG="dont-be-evil-company"
-GH_REPO="kulala-core"
+headers=$(mktemp)
+body=$(mktemp)
+trap 'rm -f "$headers" "$body"' EXIT
 
-CHECKSUMS=$(gh api repos/${GH_ORG}/${GH_REPO}/releases/latest | jq -r '.assets[] | {name: .name, digest: .digest} | @base64')
-LATEST_VERSION=$(gh api repos/${GH_ORG}/${GH_REPO}/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+status=$(
+  curl --silent --show-error --location \
+    --dump-header "$headers" \
+    --output "$body" \
+    --write-out '%{http_code}' \
+    "$CHECKSUM_URL"
+)
+if [[ "$status" != "200" ]]; then
+  echo "Checksum request failed (${status}): $(<"$body")" >&2
+  exit 1
+fi
 
-function _jq() {
-  local decoded
-  local needle="sha256:"
-  decoded=$(echo "${1}" | base64 --decode | jq -r "${2}")
-  if [[ $decoded == *"$needle"* ]]; then
-    echo "${decoded#"$needle"}"
-  else
-    echo "${decoded}"
+version="$1"
+if [[ "$version" =~ ^[vV] ]]; then
+  version="${version:1}"
+fi
+if [[ "$version" == "latest" ]]; then
+  version=$(
+    grep -i '^x-kulala-version:' "$headers" |
+      tail -n 1 |
+      cut -d' ' -f2- |
+      tr -d '[:space:]' || true
+  )
+  if [[ -z "$version" ]]; then
+    echo "Checksum response did not include X-Kulala-Version" >&2
+    exit 1
   fi
-}
+fi
 
-echo "$CHECKSUMS" | while read -r asset; do
-  checksum=$(_jq "$asset" '.digest')
-  name=$(_jq "$asset" '.name')
-  sed -i "s/sha256digests\[\"$name\"\] = \".*\"/sha256digests\[\"$name\"\] = \"$checksum\"/" "$BACKEND_CHECKSUMS_FILE" || true
-done
+jq -r 'to_entries[] | "\(.key)\t\(.value)"' "$body" |
+  while IFS=$'\t' read -r name checksum; do
+    if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]] || [[ ! "$checksum" =~ ^[0-9a-f]{64}$ ]]; then
+      echo "Unexpected checksum entry: ${name}" >&2
+      exit 1
+    fi
+    sed -i "s/sha256digests\[\"${name}\"\] = \".*\"/sha256digests[\"${name}\"] = \"${checksum}\"/" "$BACKEND_CHECKSUMS_FILE" || true
+  done
 
-echo "return \"$LATEST_VERSION\"" > "$BACKEND_VERSION_FILE"
+echo "return \"${version}\"" > "$BACKEND_VERSION_FILE"

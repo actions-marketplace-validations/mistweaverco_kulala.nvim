@@ -162,6 +162,14 @@ local M = {
       "}",
     },
 
+    -- Response history search (`require("kulala").search_responses()`).
+    -- `fuzzy` is the default when the query does not start with `fuzzy:1` or `fuzzy:0`.
+    -- `default_query` is prefilled, with the cursor after it, for example "request.body: ".
+    response_search = {
+      fuzzy = false,
+      default_query = "",
+    },
+
     -- Settings for pickers used for Environment, Authentication and Requests Managers
     pickers = {
       snacks = {
