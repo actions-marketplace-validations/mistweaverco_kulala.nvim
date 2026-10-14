@@ -102,18 +102,42 @@ local function fetch_grammar(on_done)
   end
 end
 
+---MinGW ld cannot overwrite an existing DLL when tree-sitter-cli passes a Win32
+---extended-length path (`\\?\...`). Move the old parser aside so the linker
+---creates a new file. https://github.com/dont-be-evil-company/kulala.nvim/issues/996
+---@param output_path string
+---@return string|false|nil backup path, false when the existing parser could not be moved
+local function move_windows_parser_aside(output_path)
+  if vim.fn.has("win32") ~= 1 then return end
+  if vim.fn.filereadable(output_path) ~= 1 then return end
+  local backup_path = output_path .. ".old"
+  if vim.fn.filereadable(backup_path) == 1 then vim.fn.delete(backup_path) end
+  if vim.fn.rename(output_path, backup_path) ~= 0 then return false end
+  return backup_path
+end
+
 local function build_parser(finish_progress_handler)
   local config = require("kulala.config").get()
   Fs.ensure_dir_exists(parsers_dir)
   sync_queries()
   local output_path = vim.fs.joinpath(parsers_dir, parser_name .. "." .. target_parser_ext)
+  local backup_path = move_windows_parser_aside(output_path)
+  if backup_path == false then
+    finish_progress_handler(
+      "Failed to build tree-sitter parser: could not move existing parser aside: " .. output_path,
+      false
+    )
+    return
+  end
   vim.system({ config.treesitter.cli_path, "build", "-o", output_path }, { cwd = parser_source_path }, function(obj)
     if obj.code ~= 0 then
       vim.schedule(function()
+        if backup_path and vim.fn.filereadable(output_path) ~= 1 then vim.fn.rename(backup_path, output_path) end
         finish_progress_handler("Failed to build tree-sitter parser: " .. (obj.stderr or ""), false)
       end)
     else
       vim.schedule(function()
+        if backup_path then vim.fn.delete(backup_path) end
         refresh_rtp()
         save_parser_ver()
         M.register_parser()
