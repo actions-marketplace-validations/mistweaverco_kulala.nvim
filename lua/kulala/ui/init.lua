@@ -312,6 +312,7 @@ local function show(contents, filetype, mode)
   -- (e.g. on the summary write) would bind them to a stale parser.
   local fold_win = get_kulala_window()
   local foldmethod = fold_win and vim.wo[fold_win].foldmethod
+  local foldlevel = fold_win and vim.wo[fold_win].foldlevel
   if fold_win then vim.wo[fold_win][0].foldmethod = "manual" end
 
   restore_readonly_buffer(buf)
@@ -325,7 +326,10 @@ local function show(contents, filetype, mode)
   end
   lock_buffer_readonly(buf)
 
-  if fold_win and vim.wo[fold_win].foldmethod == "manual" then vim.wo[fold_win][0].foldmethod = foldmethod end
+  if fold_win and vim.wo[fold_win].foldmethod == "manual" then
+    vim.wo[fold_win][0].foldmethod = foldmethod
+    vim.wo[fold_win][0].foldlevel = foldlevel
+  end
 
   local win = open_kulala_window(buf)
   local lnum = mode == "report" and vim.api.nvim_buf_line_count(buf) or 4
