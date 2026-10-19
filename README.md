@@ -429,4 +429,4 @@ HTTP requests from within Neovim.
 [ai-policy]: https://the-dont-be-evil-company.com/ai-policy
 [badge-our-manifesto]: https://the-dont-be-evil-company.com/assets/badges/our-manifesto.svg
 [our-manifesto]: https://the-dont-be-evil-company.com/manifesto
-[license request template]: https://github.com/dont-be-evil-company/kulala.nvim/issues/new?template=license_request.md
+[license request template]: https://github.com/dont-be-evil-company/.github/issues/new?template=kulala_license_request.md
