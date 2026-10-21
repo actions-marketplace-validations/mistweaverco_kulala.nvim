@@ -789,7 +789,7 @@ M.replay = function()
   db.previous_response_pos = #db.responses
   INLAY.clear()
 
-  -- Re-parse the HTTP buffer and send full document content to kulala-core (all scripts, vars, KULALA_SHARED).
+  -- Re-parse the HTTP buffer and send full document content to kulala-core (all scripts and vars).
   CMD.run_parser(nil, line, function(success, duration, icon_linenr, response_id)
     if success then
       elapsed_ms = UI_utils.pretty_ms(duration)

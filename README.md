@@ -56,11 +56,10 @@ It allows you to make HTTP requests from within Neovim.
   
 - Protocols: HTTP, gRPC, GraphQL, OpenAPI/Swagger explorer, WebSocket, Streaming
 - Variables: Environment, Document, Request, Dynamic, Prompt, `http-client.env` files
-- `$kulalaShared` / `$kulalaDefaultHeaders` in `http-client.env.json` for shared vars and default HTTP headers
+- `$kulala.env` and `$kulala.defaults` in `http-client.env.json` for shared vars, default HTTP headers, and curl options
 - Importing and running requests from external `*.http` files
 - Importing and saving request/response data to/from external files
 - JavaScript (Jetbrains compatible) Pre-request, Post-request, Conditional, Inline, External
-  - TypeScript Pre-request, Post-request, Conditional, Inline, External
   - `request.skip(message?)`, `request.abort(message?)`, `request.replay()` control flow
   - `$kulala.client.global.headers` for persisted default headers (also via env files)
 - Authentication: Basic, Bearer, Digest, NTLM, OAuth2, Negotiate, AWS, SSL
@@ -102,8 +101,8 @@ require("lazy").setup({
       { "<leader>Rb", desc = "Open scratchpad" },
     },
     -- See opts.lsp.enforce_external_script_naming_convention
-    -- to restrict LSP capabilities to *.http, *.http.js, *.http.ts and *.http.lua files.
-    ft = {"http", "rest", "javascript", "lua"},
+    -- to restrict LSP capabilities to *.http and *.http.js files.
+    ft = {"http", "rest", "javascript"},
     opts = {
       kulala_core = {
         -- Optional path to the kulala-core executable
@@ -275,11 +274,9 @@ require("lazy").setup({
           "http",
           "rest",
           "javascript",
-          "typescript",
-          "lua",
         },
 
-        ---Only scripts ending in *.http.js, *.http.ts and *.http.lua will be treated as HTTP scripts and
+        ---Only scripts ending in *.http.js will be treated as HTTP scripts and
         ---have LSP capabilities, unless `enforce_external_script_naming_convention` is set to false.
         ---This allows users to have non-HTTP scripts with the same filetypes without LSP interference.
         ---@type boolean

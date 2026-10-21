@@ -394,13 +394,13 @@ local function open_telescope()
         }
       end,
     },
-      sorter = sorter,
-      previewer = previewers.new_buffer_previewer {
-        title = "Match",
-        define_preview = function(self, entry)
-          vim.api.nvim_buf_set_lines(self.state.bufnr, 0, -1, false, preview_lines(entry.value))
-        end,
-      },
+    sorter = sorter,
+    previewer = previewers.new_buffer_previewer {
+      title = "Match",
+      define_preview = function(self, entry)
+        vim.api.nvim_buf_set_lines(self.state.bufnr, 0, -1, false, preview_lines(entry.value))
+      end,
+    },
     attach_mappings = function(prompt_bufnr)
       actions.select_default:replace(function()
         local selection = action_state.get_selected_entry()

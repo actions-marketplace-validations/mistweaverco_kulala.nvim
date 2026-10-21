@@ -201,11 +201,9 @@ local M = {
       "http",
       "rest",
       "javascript",
-      "typescript",
-      "lua",
     },
 
-    ---Only scripts ending in *.http.js, *.http.ts and *.http.lua will be treated as HTTP scripts and
+    ---Only scripts ending in *.http.js will be treated as HTTP scripts and
     ---have LSP capabilities, unless `enforce_external_script_naming_convention` is set to false.
     ---This allows users to have non-HTTP scripts with the same filetypes without LSP interference.
     ---@type boolean

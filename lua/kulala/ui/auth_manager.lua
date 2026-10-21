@@ -13,8 +13,12 @@ local M = {}
 
 local template = {
   ["$schema"] = "https://kulala.app/http-client.env.schema.json",
-  ["$kulalaShared"] = {
-    ["$kulalaDefaultHeaders"] = {},
+  ["$kulala"] = {
+    defaults = {
+      headers = {},
+      curlOptions = {},
+    },
+    env = {},
   },
   dev = {
     Security = { Auth = {} },

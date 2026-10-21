@@ -269,7 +269,8 @@ function M.invoke_async(payload, cwd, on_done, hooks)
   if type(cwd) == "string" and cwd ~= "" and vim.fn.isdirectory(cwd) == 1 then opts.cwd = cwd end
 
   if not keep_alive then
-    local job = vim.system({ exe }, opts, function(result)
+    local job
+    job = vim.system({ exe }, opts, function(result)
       unbind_job(job)
       on_done(result)
     end)
@@ -318,7 +319,8 @@ function M.invoke_async(payload, cwd, on_done, hooks)
     consume(data)
   end
 
-  local job = vim.system({ exe }, opts, function(result)
+  local job
+  job = vim.system({ exe }, opts, function(result)
     consume(nil)
     unbind_job(job)
     on_done {
@@ -398,7 +400,7 @@ local function catalog_from_job(job)
 end
 
 ---@param cwd string|nil
----@return table|nil catalog `{ environments, $kulalaShared? }`
+---@return table|nil catalog `{ environments, $kulala? }`
 ---@return string|nil err
 function M.list_environments(cwd)
   M.require_enabled()

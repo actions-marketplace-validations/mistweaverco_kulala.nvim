@@ -88,15 +88,15 @@ M.is_non_http_file = function()
 end
 
 ---Check if the buffer file name ends with
----.http.js or .http.ts or .http.lua
+---.http.js
 ---@param ft string filetype
 ---@param buf? number buffer to check; defaults to kulala current buffer
 ---@return boolean
 M.is_http_script_file = function(ft, buf)
-  local script_filetypes = { "javascript", "typescript", "lua" }
+  local script_filetypes = { "javascript" }
   if not vim.tbl_contains(script_filetypes, ft) then return false end
   local path = buf and vim.api.nvim_buf_get_name(buf) or M.get_current_buffer_path()
-  local extensions = { "js", "ts", "lua" }
+  local extensions = { "js" }
   local ext = vim.fn.fnamemodify(path, ":e")
   local base = vim.fn.fnamemodify(path, ":t:r")
   local enforce_external_script_naming_convention =

@@ -29,7 +29,7 @@ end
 
 local function buffer_needs_backend(buf, ft)
   if ft == "http" or ft == "rest" then return true end
-  local script_fts = { javascript = true, typescript = true, lua = true }
+  local script_fts = { javascript = true }
   if not script_fts[ft] then return false end
   return require("kulala.utils.fs").is_http_script_file(ft, buf)
 end
