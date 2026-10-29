@@ -169,18 +169,7 @@ function M.to_document_requests(doc, path)
   end
 
   for _, block in ipairs(doc.blocks or {}) do
-    if Document.is_shared_block_name(block.name) then
-      if block.preambleVariables then
-        for k, v in pairs(block.preambleVariables) do
-          shared.variables[k] = v
-        end
-      end
-      shared.name = block.name or "KULALA_SHARED"
-      shared.scripts = scripts_from_core(block.scripts, path)
-      shared.start_line = (block.position and block.position.start or 1) + off
-      shared.end_line = block_end_line(block) + off
-      shared.file = path or ""
-    elseif not block.runParentBlock and not run_children_by_parent[block.name] then
+    if not block.runParentBlock and not run_children_by_parent[block.name] then
       local request = block_to_request(block)
       if request then table.insert(requests, request) end
     end

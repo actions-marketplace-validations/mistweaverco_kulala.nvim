@@ -70,14 +70,16 @@ local function get_http_client_env(name)
   vim.iter(envs):rev():each(function(file)
     local f = FS.read_json(file) or {}
 
-    if f["$kulalaShared"] then
-      local shared = vim.deepcopy(f["$kulalaShared"])
-      shared["$kulalaDefaultHeaders"] = nil
+    local kulala = f["$kulala"]
+    if type(kulala) == "table" and type(kulala.env) == "table" then
       DB.update().http_client_env_shared =
-        vim.tbl_deep_extend("force", DB.find_unique("http_client_env_shared"), shared)
+        vim.tbl_deep_extend("force", DB.find_unique("http_client_env_shared"), kulala.env)
     end
 
-    f["$kulalaShared"], f["$schema"] = nil, nil
+    f["$kulala"], f["$schema"] = nil, nil
+    for _, section in pairs(f) do
+      if type(section) == "table" then section["$kulala"] = nil end
+    end
     DB.update().http_client_env = vim.tbl_deep_extend("force", DB.find_unique("http_client_env"), f)
   end)
 end

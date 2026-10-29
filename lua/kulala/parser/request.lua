@@ -169,9 +169,9 @@ local process_variables = function(request, silent)
   -- because the body may contain already parsed GQL.
   -- See:
   -- - GraphQL request with pre-request script, body not converted to json
-  --   https://github.com/mistweaverco/kulala.nvim/issues/844
+  --   https://github.com/dont-be-evil-company/kulala.nvim/issues/844
   -- - Variables in request body not re-evaluated on request.replay()
-  --   https://github.com/mistweaverco/kulala.nvim/issues/814
+  --   https://github.com/dont-be-evil-company/kulala.nvim/issues/814
   if request.type == "graphql" then
     process_graphql(request)
   else
@@ -196,7 +196,7 @@ local function set_variables(request)
 end
 
 local function set_headers(request, env)
-  -- Default HTTP headers come from kulala-core (`$kulalaShared` / `$kulalaDefaultHeaders` in http-client.env.json).
+  -- Default HTTP headers come from kulala-core (`$kulala.defaults.headers` in http-client.env.json).
   vim.iter(request.headers):each(function(name, value)
     name = PARSER_UTILS.get_header(request.headers, name) or name
     value = StringVariablesParser.parse(value, request.variables, env)

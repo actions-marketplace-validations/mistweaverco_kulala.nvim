@@ -13,8 +13,12 @@ local M = {}
 
 local template = {
   ["$schema"] = "https://kulala.app/http-client.env.schema.json",
-  ["$kulalaShared"] = {
-    ["$kulalaDefaultHeaders"] = {},
+  ["$kulala"] = {
+    defaults = {
+      headers = {},
+      curlOptions = {},
+    },
+    env = {},
   },
   dev = {
     Security = { Auth = {} },
@@ -96,24 +100,29 @@ local function read_http_client_env_from_disk(start_dir)
   local http_client_env = {}
   local http_client_env_shared = {}
 
-  local function merge_kulala_shared(dst, kulala_shared)
-    if type(kulala_shared) ~= "table" then return end
-    kulala_shared = vim.deepcopy(kulala_shared)
-    kulala_shared["$kulalaDefaultHeaders"] = nil
-    vim.tbl_deep_extend("force", dst, kulala_shared)
+  local function merge_kulala_env(dst, kulala)
+    if type(kulala) ~= "table" or type(kulala.env) ~= "table" then return end
+    vim.tbl_deep_extend("force", dst, kulala.env)
+  end
+
+  local function strip_kulala(file_json)
+    local kulala = file_json["$kulala"]
+    file_json["$kulala"], file_json["$schema"] = nil, nil
+    for _, section in pairs(file_json) do
+      if type(section) == "table" then section["$kulala"] = nil end
+    end
+    return kulala
   end
 
   vim.iter(find_env_files_upward("http-client.env.json", start_dir) or {}):rev():each(function(file)
     local f = Fs.read_json(file) or {}
-    merge_kulala_shared(http_client_env_shared, f["$kulalaShared"])
-    f["$kulalaShared"], f["$schema"] = nil, nil
+    merge_kulala_env(http_client_env_shared, strip_kulala(f))
     http_client_env = vim.tbl_deep_extend("force", http_client_env, f)
   end)
 
   vim.iter(find_env_files_upward("http-client.private.env.json", start_dir) or {}):rev():each(function(file)
     local f = Fs.read_json(file) or {}
-    merge_kulala_shared(http_client_env_shared, f["$kulalaShared"])
-    f["$kulalaShared"], f["$schema"] = nil, nil
+    merge_kulala_env(http_client_env_shared, strip_kulala(f))
     http_client_env = vim.tbl_deep_extend("force", http_client_env, f)
   end)
 
@@ -126,9 +135,10 @@ end
 local function catalog_from_core(core_catalog)
   local http_client_env = vim.deepcopy(core_catalog.environments or {})
   local http_client_env_shared = {}
-  if type(core_catalog["$kulalaShared"]) == "table" then
-    http_client_env_shared = vim.deepcopy(core_catalog["$kulalaShared"])
-    http_client_env_shared["$kulalaDefaultHeaders"] = nil
+  local kulala = core_catalog["$kulala"]
+  if type(kulala) == "table" and type(kulala.env) == "table" then http_client_env_shared = vim.deepcopy(kulala.env) end
+  for _, section in pairs(http_client_env) do
+    if type(section) == "table" then section["$kulala"] = nil end
   end
 
   if next(http_client_env) == nil then return nil, http_client_env_shared end
@@ -210,21 +220,25 @@ local function refresh_environment_catalog_async(force, cwd, on_done)
     finish_catalog_load(cache_key, http_client_env, http_client_env_shared)
   end
 
-  if KULALA_CORE.enabled() then
-    KULALA_CORE.list_environments_async(cwd, function(catalog, err)
-      if err and not catalog then
+  local function load_catalog()
+    if KULALA_CORE.enabled() then
+      KULALA_CORE.list_environments_async(cwd, function(catalog, err)
+        if err and not catalog then
+          finish_with_disk()
+          if not catalog_cache.entries[cache_key] then Logger.warn(err) end
+          return
+        end
+        local http_client_env, http_client_env_shared = catalog_from_core(catalog)
+        finish_catalog_load(cache_key, http_client_env, http_client_env_shared)
+      end)
+    else
+      vim.schedule(function()
         finish_with_disk()
-        if not catalog_cache.entries[cache_key] then Logger.warn(err) end
-        return
-      end
-      local http_client_env, http_client_env_shared = catalog_from_core(catalog)
-      finish_catalog_load(cache_key, http_client_env, http_client_env_shared)
-    end)
-  else
-    vim.schedule(function()
-      finish_with_disk()
-    end)
+      end)
+    end
   end
+
+  KULALA_CORE.ensure(load_catalog)
 end
 
 ---@param cwd string|nil
@@ -245,7 +259,7 @@ end
 local function get_env_names(http_client_env)
   local envs = {}
   for key, _ in pairs(http_client_env or {}) do
-    if key ~= "$kulalaShared" then table.insert(envs, key) end
+    if key ~= "$kulala" then table.insert(envs, key) end
   end
   table.sort(envs)
   return envs

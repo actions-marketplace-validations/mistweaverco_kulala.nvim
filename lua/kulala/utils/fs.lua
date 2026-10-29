@@ -88,15 +88,15 @@ M.is_non_http_file = function()
 end
 
 ---Check if the buffer file name ends with
----.http.js or .http.ts or .http.lua
+---.http.js
 ---@param ft string filetype
 ---@param buf? number buffer to check; defaults to kulala current buffer
 ---@return boolean
 M.is_http_script_file = function(ft, buf)
-  local script_filetypes = { "javascript", "typescript", "lua" }
+  local script_filetypes = { "javascript" }
   if not vim.tbl_contains(script_filetypes, ft) then return false end
   local path = buf and vim.api.nvim_buf_get_name(buf) or M.get_current_buffer_path()
-  local extensions = { "js", "ts", "lua" }
+  local extensions = { "js" }
   local ext = vim.fn.fnamemodify(path, ":e")
   local base = vim.fn.fnamemodify(path, ":t:r")
   local enforce_external_script_naming_convention =
@@ -399,8 +399,18 @@ M.write_json = function(filename, data, format_opts)
   if not content then return end
 
   if format_opts then
-    local indent = format_opts.indent or 2
-    content = vim.json.encode(data, { indent = indent }) or content
+    local response_format = require("kulala.config").get().response_format or {}
+    local KULALA_CORE = require("kulala.cmd.kulala_core_bridge")
+    if KULALA_CORE.enabled() then
+      local expand_tabs = format_opts.expand_tabs
+      if type(expand_tabs) ~= "boolean" then expand_tabs = response_format.expand_tabs end
+      local formatted = KULALA_CORE.format_json(data, {
+        indent = format_opts.indent or response_format.indent,
+        expand_tabs = expand_tabs,
+        sort_keys = format_opts.sort or format_opts.sort_keys or response_format.sort_keys,
+      })
+      if type(formatted) == "string" then content = formatted end
+    end
   end
 
   return M.write_file(filename, content)

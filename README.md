@@ -42,15 +42,24 @@ It allows you to make HTTP requests from within Neovim.
 
 </div>
 
+## Kulala License Tokens
+
+> [!IMPORTANT]
+> Kulala-Core went private and closed-source,
+> All Kulala tools require a license token to run.
+>
+> To request a license token,
+> please open an issue using the [license request template].
+
+
 ## Features
   
 - Protocols: HTTP, gRPC, GraphQL, OpenAPI/Swagger explorer, WebSocket, Streaming
 - Variables: Environment, Document, Request, Dynamic, Prompt, `http-client.env` files
-- `$kulalaShared` / `$kulalaDefaultHeaders` in `http-client.env.json` for shared vars and default HTTP headers
+- `$kulala.env` and `$kulala.defaults` in `http-client.env.json` for shared vars, default HTTP headers, and curl options
 - Importing and running requests from external `*.http` files
 - Importing and saving request/response data to/from external files
 - JavaScript (Jetbrains compatible) Pre-request, Post-request, Conditional, Inline, External
-  - TypeScript Pre-request, Post-request, Conditional, Inline, External
   - `request.skip(message?)`, `request.abort(message?)`, `request.replay()` control flow
   - `$kulala.client.global.headers` for persisted default headers (also via env files)
 - Authentication: Basic, Bearer, Digest, NTLM, OAuth2, Negotiate, AWS, SSL
@@ -83,24 +92,25 @@ Via [lazy.nvim](https://github.com/folke/lazy.nvim):
 ```lua
 require("lazy").setup({
   {
-    "mistweaverco/kulala.nvim",
-    -- Load before session save/restore so VimLeavePre and SessionLoadPost hooks are registered.
-    event = { "SessionLoadPost", "VimLeavePre" },
+    "dont-be-evil-company/kulala.nvim",
+    -- Load when a session is restored so the SessionLoadPost hook can run.
+    event = { "SessionLoadPost" },
     keys = {
       { "<leader>Rs", desc = "Send request" },
       { "<leader>Ra", desc = "Send all requests" },
       { "<leader>Rb", desc = "Open scratchpad" },
     },
     -- See opts.lsp.enforce_external_script_naming_convention
-    -- to restrict LSP capabilities to *.http, *.http.js, *.http.ts and *.http.lua files.
-    ft = {"http", "rest", "javascript", "lua"},
+    -- to restrict LSP capabilities to *.http and *.http.js files.
+    ft = {"http", "rest", "javascript"},
     opts = {
       kulala_core = {
         -- Optional path to the kulala-core executable
-        -- (https://github.com/mistweaverco/kulala-core).
+        -- (https://github.com/dont-be-evil-company/kulala-core).
         -- When set, this path is used exclusively.
-        -- When nil (default), auto-download and
-        -- use kulala-core from GitHub releases based on the user's OS and architecture.
+        -- When nil (default), auto-download kulala-core from
+        -- https://core.kulala.app for the user's OS and architecture.
+        -- Set KULALA_CORE_LICENSE_TOKEN to skip the license prompt on first use.
         path = nil,
         -- Subprocess timeout (ms) for kulala-core.
         -- Default is 60000 (1 minute).
@@ -116,7 +126,7 @@ require("lazy").setup({
         -- - Windows: %APPDATA%\kulala-core
         data_dir = nil,
         -- Optional override for download url
-        download_url = "https://github.com/mistweaverco/kulala-core/releases/download/%s/%s",
+        download_url = "https://core.kulala.app/releases/%s/%s",
         -- "curl" or "wget" or full path to "curl" or "wget" executable.
         download_tool = "curl",
       },
@@ -264,11 +274,9 @@ require("lazy").setup({
           "http",
           "rest",
           "javascript",
-          "typescript",
-          "lua",
         },
 
-        ---Only scripts ending in *.http.js, *.http.ts and *.http.lua will be treated as HTTP scripts and
+        ---Only scripts ending in *.http.js will be treated as HTTP scripts and
         ---have LSP capabilities, unless `enforce_external_script_naming_convention` is set to false.
         ---This allows users to have non-HTTP scripts with the same filetypes without LSP interference.
         ---@type boolean
@@ -397,24 +405,25 @@ HTTP requests from within Neovim.
 
 
 [restnvim-unarchived-post]: https://github.com/rest-nvim/rest.nvim/issues/398#issue-2442747909
-[badge-discord]: https://mistweaverco.com/assets/badges/discord.svg
-[discord]: https://mistweaverco.com/discord
-[badge-made-with-love]: https://mistweaverco.com/assets/badges/made-with-love.svg
-[contributors]: https://github.com/mistweaverco/kulala.nvim/graphs/contributors
-[badge-test-status]: https://img.shields.io/github/actions/workflow/status/mistweaverco/kulala.nvim/tests.yml?label=main&branch=main&style=for-the-badge
-[link-test-status]: https://github.com/mistweaverco/kulala.nvim/actions/workflows/tests.yml
+[badge-discord]: https://the-dont-be-evil-company.com/assets/badges/discord.svg
+[discord]: https://the-dont-be-evil-company.com/discord
+[badge-made-with-love]: https://the-dont-be-evil-company.com/assets/badges/made-with-love.svg
+[contributors]: https://github.com/dont-be-evil-company/kulala.nvim/graphs/contributors
+[badge-test-status]: https://img.shields.io/github/actions/workflow/status/dont-be-evil-company/kulala.nvim/tests.yml?label=main&branch=main&style=for-the-badge
+[link-test-status]: https://github.com/dont-be-evil-company/kulala.nvim/actions/workflows/tests.yml
 [rest-nvim]: https://github.com/rest-nvim/rest.nvim
 [curl-nvim]: https://github.com/oysandvik94/curl.nvim
-[kulala-cli]: https://github.com/mistweaverco/kulala-cli
-[kulala-fmt]: https://github.com/mistweaverco/kulala-fmt
-[kulala-desktop]: https://github.com/mistweaverco/kulala-desktop
-[kulala.vscode]: https://github.com/mistweaverco/kulala.vscode
-[kulala-core]: https://github.com/mistweaverco/kulala-core
-[kulala-github-action]: https://github.com/mistweaverco/kulala-github-action
+[kulala-cli]: https://github.com/dont-be-evil-company/kulala-cli
+[kulala-fmt]: https://github.com/dont-be-evil-company/kulala-fmt
+[kulala-desktop]: https://github.com/dont-be-evil-company/kulala-desktop
+[kulala.vscode]: https://github.com/dont-be-evil-company/kulala.vscode
+[kulala-core]: https://github.com/dont-be-evil-company/kulala-core
+[kulala-github-action]: https://github.com/dont-be-evil-company/kulala-github-action
 [demo-image]: https://github.com/user-attachments/assets/a7b3b01f-0115-44dc-94d2-8abd4db6fb60
-[badge-development-status]: https://mistweaverco.com/assets/badges/development-status.svg
-[development-status]: https://mistweaverco.com/roadmap?filter=kulala.nvim
-[badge-ai-policy]: https://mistweaverco.com/assets/badges/ai-policy.svg
-[ai-policy]: https://mistweaverco.com/ai-policy
-[badge-our-manifesto]: https://mistweaverco.com/assets/badges/our-manifesto.svg
-[our-manifesto]: https://mistweaverco.com/manifesto
+[badge-development-status]: https://the-dont-be-evil-company.com/assets/badges/development-status.svg
+[development-status]: https://the-dont-be-evil-company.com/roadmap?filter=kulala.nvim
+[badge-ai-policy]: https://the-dont-be-evil-company.com/assets/badges/ai-policy.svg
+[ai-policy]: https://the-dont-be-evil-company.com/ai-policy
+[badge-our-manifesto]: https://the-dont-be-evil-company.com/assets/badges/our-manifesto.svg
+[our-manifesto]: https://the-dont-be-evil-company.com/manifesto
+[license request template]: https://github.com/dont-be-evil-company/.github/issues/new?template=kulala_license_request.md

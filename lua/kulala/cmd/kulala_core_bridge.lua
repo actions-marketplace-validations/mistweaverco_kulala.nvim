@@ -5,6 +5,10 @@ local M = {}
 
 ---@type vim.SystemObj|nil
 M.active_job = nil
+---History search subprocess. Kept off `active_job` so a search cannot orphan a request
+---or leave two kulala-core processes holding the SQLite lock for the rest of the session.
+---@type vim.SystemObj|nil
+M.search_job = nil
 
 ---User-configured path from setup (`kulala_core.path`), if any.
 ---@return string|nil
@@ -44,6 +48,33 @@ function M.require_enabled()
       .. "Either let kulala.nvim auto-download and install kulala-core or set `kulala_core.path` in setup.",
     0
   )
+end
+
+---Download kulala-core when auto-install applies, then run `on_ready`.
+---A configured `kulala_core.path` is never downloaded. `on_ready` still runs
+---when the binary is already present, a path is configured, or Neovim is exiting.
+---@param on_ready fun()
+function M.ensure(on_ready)
+  if M.enabled() or configured_core_path() or vim.v.exiting ~= vim.NIL then
+    on_ready()
+    return
+  end
+  Backend.ensure_installed(on_ready)
+end
+
+---Run `on_ready` when kulala-core is usable.
+---A missing configured path is reported and `on_ready` is skipped.
+---A failed auto-install is already reported by the downloader.
+---@param on_ready fun()
+function M.guard(on_ready)
+  M.ensure(function()
+    if M.enabled() then
+      on_ready()
+      return
+    end
+    local configured = configured_core_path()
+    if configured then require("kulala.logger").error(("kulala_core.path is not executable: %s"):format(configured)) end
+  end)
 end
 
 ---Matches `packages/core/src/lib/runner/external-tools/paths.ts` (`getKulalaCoreDataDir`).
@@ -164,6 +195,25 @@ function M.try_decode_wrapper(stdout)
   return nil
 end
 
+---@param payload table|nil
+---@return boolean
+local function payload_keep_alive(payload)
+  return type(payload) == "table"
+    and type(payload.content) == "string"
+    and payload.content:find("@kulala-keep-alive-stream", 1, true) ~= nil
+end
+
+---One stdout line from a keep-alive run, or nil when it belongs to the final JSON document.
+---@param line string
+---@return table|nil
+function M.parse_http_stream_line(line)
+  local trimmed = vim.trim(line or "")
+  if trimmed:sub(1, 1) ~= "{" then return nil end
+  local ok, value = pcall(vim.json.decode, trimmed)
+  if not ok or type(value) ~= "table" or value.type ~= "http-stream" then return nil end
+  return value
+end
+
 ---Stop the in-flight kulala-core subprocess (e.g. Ctrl+C interrupt).
 ---@return boolean stopped
 function M.interrupt_active()
@@ -179,36 +229,133 @@ end
 ---@param payload table
 ---@param cwd string|nil
 ---@param on_done fun(job: vim.SystemCompleted)
-function M.invoke_async(payload, cwd, on_done)
+---@param hooks? { on_http_stream?: fun(event: table), timeout_ms?: number, track?: "active"|"search"|"none" }
+function M.invoke_async(payload, cwd, on_done, hooks)
   local exe = M.require_enabled()
+  hooks = hooks or {}
+  local track = hooks.track or "active"
+  local function bind_job(job)
+    if track == "search" then
+      local previous = M.search_job
+      if previous and previous ~= job then
+        M.search_job = nil
+        pcall(function()
+          previous:kill("sigterm")
+        end)
+      end
+      M.search_job = job
+    elseif track ~= "none" then
+      M.active_job = job
+    end
+  end
+  local function unbind_job(job)
+    if track == "search" then
+      if M.search_job == job then M.search_job = nil end
+    elseif track ~= "none" then
+      if M.active_job == job then M.active_job = nil end
+    end
+  end
+  local keep_alive = payload_keep_alive(payload)
   local opts = {
     stdin = vim.json.encode(payload) .. "\n",
     text = true,
     env = env_with_data_dir(),
   }
-  local timeout_ms = invoke_timeout_ms()
-  if timeout_ms then opts.timeout = timeout_ms end
+  if not keep_alive then
+    local timeout_ms = hooks.timeout_ms
+    if timeout_ms == nil then timeout_ms = invoke_timeout_ms() end
+    if timeout_ms and timeout_ms > 0 then opts.timeout = timeout_ms end
+  end
   if type(cwd) == "string" and cwd ~= "" and vim.fn.isdirectory(cwd) == 1 then opts.cwd = cwd end
 
-  M.active_job = vim.system({ exe }, opts, function(job)
-    if M.active_job == job then M.active_job = nil end
-    on_done(job)
+  if not keep_alive then
+    local job
+    job = vim.system({ exe }, opts, function(result)
+      unbind_job(job)
+      on_done(result)
+    end)
+    bind_job(job)
+    return
+  end
+
+  local acc = {}
+  local line_buf = ""
+  local flushed = false
+
+  local function take_line(line)
+    local event = M.parse_http_stream_line(line)
+    if event then
+      if hooks.on_http_stream then vim.schedule(function()
+        hooks.on_http_stream(event)
+      end) end
+      return
+    end
+    acc[#acc + 1] = line
+    acc[#acc + 1] = "\n"
+  end
+
+  local function consume(data)
+    if data == nil then
+      if flushed then return end
+      flushed = true
+      if line_buf ~= "" then
+        take_line(line_buf)
+        line_buf = ""
+      end
+      return
+    end
+    line_buf = line_buf .. data
+    while true do
+      local nl = line_buf:find("\n", 1, true)
+      if not nl then break end
+      local line = line_buf:sub(1, nl - 1)
+      line_buf = line_buf:sub(nl + 1)
+      if line:sub(-1) == "\r" then line = line:sub(1, -2) end
+      take_line(line)
+    end
+  end
+
+  opts.stdout = function(_, data)
+    consume(data)
+  end
+
+  local job
+  job = vim.system({ exe }, opts, function(result)
+    consume(nil)
+    unbind_job(job)
+    on_done {
+      code = result.code,
+      signal = result.signal,
+      stdout = table.concat(acc),
+      stderr = result.stderr,
+    }
   end)
+  bind_job(job)
 end
 
 ---@param payload table
 ---@param cwd string|nil
+---@param hooks? { timeout_ms?: number, track?: "active"|"search"|"none" }
 ---@return vim.SystemCompleted
-function M.invoke(payload, cwd)
+function M.invoke(payload, cwd, hooks)
   local done = false
   local completed ---@type vim.SystemCompleted
   M.invoke_async(payload, cwd, function(job)
     completed = job
     done = true
-  end)
-  vim.wait(invoke_timeout_ms() or 600000, function()
+  end, hooks)
+  local wait_ms = (hooks and hooks.timeout_ms) or invoke_timeout_ms() or 600000
+  if payload_keep_alive(payload) then wait_ms = 24 * 60 * 60 * 1000 end
+  vim.wait(wait_ms, function()
     return done
   end, 20)
+  if not done and hooks and hooks.track == "search" and M.search_job then
+    local job = M.search_job
+    M.search_job = nil
+    pcall(function()
+      job:kill("sigterm")
+    end)
+  end
   return completed or { code = 124, stdout = "", stderr = "kulala-core subprocess timed out" }
 end
 
@@ -253,7 +400,7 @@ local function catalog_from_job(job)
 end
 
 ---@param cwd string|nil
----@return table|nil catalog `{ environments, $kulalaShared? }`
+---@return table|nil catalog `{ environments, $kulala? }`
 ---@return string|nil err
 function M.list_environments(cwd)
   M.require_enabled()
@@ -330,13 +477,14 @@ end
 ---@param payload table
 ---@param cwd string|nil
 ---@param on_done fun(wrapper: table|nil, err: string|nil)
-function M.run_async(payload, cwd, on_done)
+---@param hooks? { on_http_stream?: fun(event: table) }
+function M.run_async(payload, cwd, on_done, hooks)
   M.require_enabled()
   payload.action = "run"
   M.invoke_async(payload, cwd, function(job)
     local wrapper, err = run_result_from_job(job)
     on_done(wrapper, err)
-  end)
+  end, hooks)
 end
 
 ---@param job vim.SystemCompleted
@@ -437,12 +585,78 @@ function M.crypto(op, args, cwd)
   return nil, "invalid kulala-core crypto output"
 end
 
+---Browser grants can wait on a local redirect server for up to five minutes.
+local OAUTH_BROWSER_TIMEOUT_MS = 300000
+
+---@param op "revoke"|"acquire"|"refresh"|"status"|"save"
+---@param args { env?: string, authId: string, token?: table }|nil
+---@param cwd string|nil
+---@return table|nil result
+---@return string|nil err
+function M.oauth(op, args, cwd)
+  M.require_enabled()
+  args = args or {}
+  local payload = {
+    action = "oauth",
+    op = op,
+    cwd = cwd,
+    env = args.env,
+    authId = args.authId,
+    token = args.token,
+  }
+  local hooks = nil
+  if op == "acquire" or op == "refresh" then hooks = { timeout_ms = OAUTH_BROWSER_TIMEOUT_MS } end
+  local job = M.invoke(payload, cwd, hooks)
+  local res, err = decode_job_stdout(job)
+  if not res then return nil, err end
+  if res.prompt == true then return res, nil end
+  if res.success == false then return nil, res.error or "kulala-core oauth failed" end
+  return res, nil
+end
+
+---@param value any
+---@param opts { text?: string, indent?: number, expand_tabs?: boolean, sort_keys?: boolean, cwd?: string }|nil
+---@return string|nil content
+---@return string|nil err
+function M.format_json(value, opts)
+  M.require_enabled()
+  opts = opts or {}
+  local payload = {
+    action = "format_json",
+    indent = opts.indent,
+    expand_tabs = opts.expand_tabs,
+    sort_keys = opts.sort_keys,
+  }
+  if opts.text ~= nil then
+    payload.text = opts.text
+  else
+    payload.value = value
+  end
+  local job = M.invoke(payload, opts.cwd)
+  local res = decode_action_response(job.stdout)
+  if res and res.success == true and type(res.content) == "string" then return res.content, nil end
+  if res and res.error then return nil, res.error end
+  if job.code ~= 0 then
+    return nil, vim.trim(job.stderr or "") ~= "" and vim.trim(job.stderr) or "kulala-core format_json failed"
+  end
+  return nil, "invalid kulala-core format_json output"
+end
+
 ---@param body table|string|nil
 ---@return string
 local function response_body_text(body)
   if type(body) == "table" and body.type == "json" then
-    if type(body.formatted) == "string" then return body.formatted end
-    return vim.json.encode(body.content) or ""
+    if type(body.formatted) == "string" and body.formatted ~= "" then return body.formatted end
+    if body.content ~= nil then
+      local fmt = require("kulala.config").get().response_format or {}
+      local ok, formatted = pcall(M.format_json, body.content, {
+        indent = fmt.indent,
+        expand_tabs = fmt.expand_tabs,
+        sort_keys = fmt.sort_keys,
+      })
+      if ok and type(formatted) == "string" then return formatted end
+    end
+    return vim.inspect(body.content)
   end
   if type(body) == "table" and body.type == "text" then return body.content or "" end
   if type(body) == "table" and body.type == "binary" then
@@ -547,6 +761,48 @@ function M.apply_jq_filter(opts, cwd)
     return nil, vim.trim(job.stderr or "") ~= "" and vim.trim(job.stderr) or "kulala-core apply_jq_filter failed"
   end
   return nil, "invalid kulala-core apply_jq_filter output"
+end
+
+---Search persisted request history (`request_history` in kulala-core).
+---@param opts { query?: string, fuzzy?: boolean, limit?: number, fuzzyLimit?: number }
+---@param cwd string|nil
+---@return table|nil result `{ success, fuzzy?, matches?, error? }`
+---@return string|nil err
+function M.search_responses(opts, cwd)
+  M.require_enabled()
+  local payload = {
+    action = "search_responses",
+    query = opts.query or "",
+    fuzzy = opts.fuzzy,
+    limit = opts.limit,
+    fuzzyLimit = opts.fuzzyLimit,
+  }
+  local job = M.invoke(payload, cwd, { track = "search" })
+  local res = decode_action_response(job.stdout)
+  if res and res.type == "search_responses" then return res, nil end
+  if res and res.error then return nil, res.error end
+  if job.code ~= 0 then
+    return nil, vim.trim(job.stderr or "") ~= "" and vim.trim(job.stderr) or "kulala-core search_responses failed"
+  end
+  return nil, "invalid kulala-core search_responses output"
+end
+
+---Load one persisted history row by id.
+---@param id number
+---@param cwd string|nil
+---@return table|nil entry
+---@return string|nil err
+function M.get_history_entry(id, cwd)
+  M.require_enabled()
+  local payload = { action = "get_history_entry", id = id }
+  local job = M.invoke(payload, cwd)
+  local res = decode_action_response(job.stdout)
+  if res and res.success == true and type(res.entry) == "table" then return res.entry, nil end
+  if res and res.error then return nil, res.error end
+  if job.code ~= 0 then
+    return nil, vim.trim(job.stderr or "") ~= "" and vim.trim(job.stderr) or "kulala-core get_history_entry failed"
+  end
+  return nil, "invalid kulala-core get_history_entry output"
 end
 
 ---Convert an image body to PNG for terminal graphics protocols.
@@ -1176,7 +1432,7 @@ function M.from_curl(curl)
 end
 
 ---Start a long-lived WebSocket session (native kulala-core, replaces websocat).
----@param opts { url: string, body?: string, headers?: table }
+---@param opts { url: string, body?: string, headers?: table, messages?: table, timeoutMs?: number }
 ---@param handlers { on_stdout: function, on_stderr: function, on_exit: function }
 ---@param cwd string|nil
 ---@return vim.SystemObj|nil
@@ -1188,9 +1444,14 @@ function M.websocket_start(opts, handlers, cwd)
   local tmp = vim.fn.tempname() .. ".json"
   local payload = {
     url = opts.url,
-    body = opts.body,
     headers = opts.headers,
   }
+  if type(opts.messages) == "table" then
+    payload.messages = opts.messages
+    if type(opts.timeoutMs) == "number" then payload.timeoutMs = opts.timeoutMs end
+  else
+    payload.body = opts.body
+  end
   vim.fn.writefile({ vim.json.encode(payload) }, tmp)
 
   return vim.system({ exe, "--websocket", "-i", tmp }, {

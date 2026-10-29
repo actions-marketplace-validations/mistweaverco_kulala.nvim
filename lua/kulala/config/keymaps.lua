@@ -119,6 +119,13 @@ M.default_global_keymaps = {
     end,
     ft = { "http", "rest" },
   },
+  ["Search responses"] = {
+    "H",
+    function()
+      require("kulala").search_responses()
+    end,
+    ft = { "http", "rest" },
+  },
   ["Toggle headers/body"] = {
     "t",
     function()
@@ -169,6 +176,12 @@ M.default_kulala_keymaps = {
     "H",
     function()
       require("kulala.ui").show_headers()
+    end,
+  },
+  ["Search responses"] = {
+    "s",
+    function()
+      require("kulala").search_responses()
     end,
   },
   ["Show body"] = {

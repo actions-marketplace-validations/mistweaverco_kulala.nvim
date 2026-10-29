@@ -64,6 +64,150 @@ local function make_executable(path)
   if not IS_WINDOWS then vim.fn.system { "chmod", "+x", path } end
 end
 
+local VERSION_PROBE_TIMEOUT_MS = 15000
+
+local function version_probe_ok(result)
+  if not result or result.code ~= 0 then return false end
+  return vim.trim(result.stdout or "") ~= ""
+end
+
+---Run `kulala-core --version`. On macOS, clear quarantine once and retry.
+---@param bin_path string
+---@param on_done fun(ok: boolean)
+local function probe_installed_binary(bin_path, on_done)
+  local function run(after)
+    vim.system({ bin_path, "--version" }, { text = true, timeout = VERSION_PROBE_TIMEOUT_MS }, function(result)
+      vim.schedule(function()
+        after(result)
+      end)
+    end)
+  end
+
+  run(function(result)
+    if version_probe_ok(result) then
+      on_done(true)
+      return
+    end
+    if vim.uv.os_uname().sysname ~= "Darwin" then
+      on_done(false)
+      return
+    end
+    vim.system({ "xattr", "-d", "com.apple.quarantine", bin_path }, { text = true }, function()
+      run(function(retry)
+        on_done(version_probe_ok(retry))
+      end)
+    end)
+  end)
+end
+
+local function report_launch_failure(bin_path)
+  if vim.fn.filereadable(bin_path) == 1 then vim.fn.delete(bin_path) end
+  if vim.uv.os_uname().sysname == "Darwin" then
+    Logger.error(
+      "macOS refused to start kulala-core. The downloaded binary is signed incorrectly or blocked by Gatekeeper."
+    )
+  else
+    Logger.error("kulala-core --version failed. The downloaded binary did not start.")
+  end
+end
+
+---Kulala Core data directory. Matches `kulala_core_bridge.effective_data_dir`.
+---The token lives here so a plugin or client update does not throw it away.
+local function kulala_core_data_dir()
+  return require("kulala.cmd.kulala_core_bridge").effective_data_dir()
+end
+
+local function license_token_path()
+  return join_paths(kulala_core_data_dir(), "license-token")
+end
+
+---Previous config-directory location, kept so an already entered token is reused.
+local function legacy_license_token_path()
+  local sys = vim.uv.os_uname().sysname
+  if sys == "Windows_NT" then
+    local appdata = vim.env.APPDATA or join_paths(vim.env.USERPROFILE or "", "AppData", "Roaming")
+    return join_paths(appdata, "kulala", "license-token")
+  elseif sys == "Darwin" then
+    return join_paths(vim.env.HOME, "Library", "Application Support", "kulala", "license-token")
+  end
+  local xdg = vim.env.XDG_CONFIG_HOME
+  if xdg and xdg ~= "" then return join_paths(xdg, "kulala", "license-token") end
+  return join_paths(vim.env.HOME, ".config", "kulala", "license-token")
+end
+
+local function read_token_file(path)
+  local f = io.open(path, "r")
+  if not f then return nil end
+  local token = vim.trim(f:read("*a") or "")
+  f:close()
+  if token == "" then return nil end
+  return token
+end
+
+local function save_license_token(token)
+  local path = license_token_path()
+  vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
+  local f = io.open(path, "w")
+  if not f then
+    Logger.error("Could not save the Kulala license token")
+    return
+  end
+  f:write(token)
+  f:close()
+  if not IS_WINDOWS then vim.fn.setfperm(path, "rw-------") end
+end
+
+local function read_saved_license_token()
+  local saved = read_token_file(license_token_path())
+  if saved then return saved end
+  local legacy = read_token_file(legacy_license_token_path())
+  if not legacy then return nil end
+  save_license_token(legacy)
+  return legacy
+end
+
+---Remove the saved token. Call only after the download server rejects it.
+local function delete_saved_license_token()
+  for _, path in ipairs { license_token_path(), legacy_license_token_path() } do
+    if vim.fn.filereadable(path) == 1 then vim.fn.delete(path) end
+  end
+end
+
+---Prompt for a license token and save it. Returns nil when the user cancels.
+local function prompt_license_token()
+  local token = vim.trim(vim.fn.inputsecret("Kulala license token: ") or "")
+  if token == "" then
+    Logger.error("No license token entered. Set KULALA_CORE_LICENSE_TOKEN to download kulala-core.")
+    return nil
+  end
+  save_license_token(token)
+  return token
+end
+
+---Resolve the download token. Does not prompt.
+---@return string|nil token
+---@return string|nil source "env" or "file"
+local function resolve_license_token()
+  local from_env = vim.env.KULALA_CORE_LICENSE_TOKEN
+  if from_env and vim.trim(from_env) ~= "" then return vim.trim(from_env), "env" end
+  local saved = read_saved_license_token()
+  if saved then return saved, "file" end
+  return nil, nil
+end
+
+local function read_http_status(header_path)
+  local f = io.open(header_path, "r")
+  if not f then return nil end
+  local status = nil
+  for line in f:lines() do
+    local code = line:match("^HTTP/%S+%s+(%d+)")
+    if code then status = tonumber(code) end
+  end
+  f:close()
+  os.remove(header_path)
+  return status
+end
+
 local get_version_path = function()
   return join_paths(M.get_bin_dir(), "version.txt")
 end
@@ -85,18 +229,21 @@ local set_installed_version = function(version)
   f:close()
 end
 
----Download a file using curl with progress parsing
+---Download a file using wget with progress parsing
 ---@param url string URL to download from
 ---@param output_path string Path to save the file to
 ---@param progress_callback function|nil Optional callback for progress updates: {progress: number, message: string}
----@param callback function|nil Optional callback to run after download completes (receives success: boolean)
-local function download_via_wget(url, output_path, progress_callback, callback)
+---@param callback function|nil Optional callback after download completes: {success: boolean, http_code: integer|nil}
+local function download_via_wget(url, output_path, progress_callback, callback, token)
   local config = require("kulala.config").get()
+  local http_code = nil
   local cmd = {
     config.kulala_core.download_tool,
     "--quiet",
+    "--server-response",
     "--show-progress",
     "--progress=dot:giga",
+    "--header=Authorization: Bearer " .. token,
     "-O",
     output_path,
     url,
@@ -120,15 +267,19 @@ local function download_via_wget(url, output_path, progress_callback, callback)
         end
       end
     end),
-    on_stderr = vim.schedule_wrap(function()
-      -- TODO: Check if we need to parse this as well
+    on_stderr = vim.schedule_wrap(function(_, data, _)
+      if not data then return end
+      for _, line in ipairs(data) do
+        local code = line:match("HTTP/%S+%s+(%d+)")
+        if code then http_code = tonumber(code) end
+      end
     end),
     on_exit = vim.schedule_wrap(function(_, exit_code, _)
       if exit_code ~= 0 then
         Logger.error("Download failed with exit code: " .. tostring(exit_code))
         -- Clean up partial download if it exists
         if vim.fn.filereadable(output_path) == 1 then vim.fn.delete(output_path) end
-        if callback then callback(false) end
+        if callback then callback(false, http_code) end
         return
       end
 
@@ -136,7 +287,7 @@ local function download_via_wget(url, output_path, progress_callback, callback)
       local f = io.open(output_path, "r")
       if not f then
         Logger.error("Downloaded file not found at: " .. output_path)
-        if callback then callback(false) end
+        if callback then callback(false, http_code) end
         return
       end
       f:close()
@@ -155,8 +306,9 @@ end
 ---@param output_path string Path to save the file to
 ---@param progress_callback function|nil Optional callback for progress updates: {progress: number, message: string}
 ---@param callback function|nil Optional callback to run after download completes (receives success: boolean)
-local function download_via_curl(url, output_path, progress_callback, callback)
+local function download_via_curl(url, output_path, progress_callback, callback, token)
   local config = require("kulala.config").get()
+  local header_path = output_path .. ".headers"
   -- Use curl with simple progress bar (#) that outputs to stderr
   -- Format: %{url_effective}\n%{size_download}\n%{size_total}\n%{speed_download}\n%{time_total}
   -- We'll parse this to show percentage
@@ -164,6 +316,10 @@ local function download_via_curl(url, output_path, progress_callback, callback)
     config.kulala_core.download_tool,
     "-fL",
     "-#", -- Simple progress bar (easier to parse than --progress-bar)
+    "-H",
+    "Authorization: Bearer " .. token,
+    "-D",
+    header_path,
     "--write-out",
     "%{url_effective}\n%{size_download}\n%{size_total}\n%{speed_download}\n%{time_total}\n",
     "-o",
@@ -371,12 +527,13 @@ local function download_via_curl(url, output_path, progress_callback, callback)
       -- Don't flush pending progress - it might be stale (low values from stderr)
       -- Just clear it
       pending_progress = nil
+      local http_code = read_http_status(header_path)
 
       if exit_code ~= 0 then
         Logger.error("Download failed with exit code: " .. tostring(exit_code))
         -- Clean up partial download if it exists
         if vim.fn.filereadable(output_path) == 1 then vim.fn.delete(output_path) end
-        if callback then callback(false) end
+        if callback then callback(false, http_code) end
         return
       end
 
@@ -384,7 +541,7 @@ local function download_via_curl(url, output_path, progress_callback, callback)
       local f = io.open(output_path, "r")
       if not f then
         Logger.error("Downloaded file not found at: " .. output_path)
-        if callback then callback(false) end
+        if callback then callback(false, http_code) end
         return
       end
       f:close()
@@ -417,7 +574,13 @@ end
 ---@param output_path string Path to save the file to
 ---@param progress_callback function|nil Optional callback for progress updates: {progress: number, message: string}
 ---@param callback function|nil Optional callback to run after download completes (receives success: boolean)
-local function download_file_async(url, output_path, progress_callback, callback)
+local function download_file_async(url, output_path, progress_callback, callback, token)
+  if not token or token == "" then
+    Logger.error("KULALA_CORE_LICENSE_TOKEN is not set. Set it to download kulala-core.")
+    if callback then callback(false) end
+    return
+  end
+
   local config = require("kulala.config").get()
   local download_tool = config.kulala_core.download_tool or "curl"
   -- check if download_tool has "curl" or "wget" in it
@@ -435,10 +598,18 @@ local function download_file_async(url, output_path, progress_callback, callback
   end
 
   if downloader == "curl" then
-    download_via_curl(url, output_path, progress_callback, callback)
+    download_via_curl(url, output_path, progress_callback, callback, token)
   else
-    download_via_wget(url, output_path, progress_callback, callback)
+    download_via_wget(url, output_path, progress_callback, callback, token)
   end
+end
+
+local checksum_matches = function(file_path, expected_checksum)
+  if not vim.fn.filereadable(file_path) then return false end
+  local actual_checksum = IS_WINDOWS
+      and vim.fn.systemlist({ "CertUtil", "-hashfile", file_path, "SHA256" })[2]:gsub("%s+", "")
+    or vim.fn.systemlist({ "sha256sum", file_path })[1]:match("^(%w+)")
+  return actual_checksum == expected_checksum
 end
 
 ---Check if binary exists
@@ -459,12 +630,6 @@ local function get_required_version()
   return Globals.BACKEND_VERSION
 end
 
----Get the required backend version tag (with "v" prefix for GitHub releases)
----@return string version_tag Version tag like "v1.0.0"
-local function get_required_version_tag()
-  return "v" .. Globals.BACKEND_VERSION
-end
-
 ---Check if the installed version matches the required version
 ---@return boolean matches True if versions match, false otherwise
 local function version_matches()
@@ -481,25 +646,35 @@ end
 ---@param version string|nil Version tag to install (e.g., "v1.0.0"), defaults to "latest"
 ---@param callback function|nil Optional callback to run after installation
 M.install = function(version, callback)
-  version = version or "latest"
-  local version_tag = version:match("^v") and version ~= "latest" and version or "v" .. version
-  version = version:match("^v") and version:sub(2) or version
+  version = version or get_required_version()
+  if version == "latest" then version = get_required_version() end
+  version = version:gsub("^v", "")
+  local release_bin_name = M.get_release_bin_name()
   local download_url = require("kulala.config").get().kulala_core.download_url
-
-  -- Handle "latest" specially - use the /latest/download/ URL redirect
-  local url
-  if version == "latest" then
-    url = string.format(download_url, "latest", M.get_release_bin_name())
-  else
-    url = string.format(download_url, version_tag, M.get_release_bin_name())
-  end
+  local url = string.format(download_url, version, release_bin_name)
   Logger.info("Downloading backend from URL: " .. url)
+
+  local token, token_source = resolve_license_token()
+  if not token then token = prompt_license_token() end
+  if not token then
+    if callback then callback(false) end
+    return
+  end
 
   local bin_dir = M.get_bin_dir()
   vim.fn.mkdir(bin_dir, "p")
 
   -- Download to temporary archive file
   local download_file_path = join_paths(bin_dir, M.get_release_bin_name() .. ".download")
+
+  -- check checksum
+  local checksums = require("kulala.globals.versions.backend_checksums")
+  local expected_checksum = checksums[release_bin_name]
+  if not expected_checksum then
+    Logger.error("No checksum found for " .. release_bin_name .. ". Cannot verify download integrity.")
+    if callback then callback(false) end
+    return
+  end
 
   -- Start timing from the beginning of download
   local start_time = vim.fn.reltime()
@@ -508,7 +683,25 @@ M.install = function(version, callback)
   local download_progress, download_finish =
     Notify.create_progress_handler(Globals.KULALA_CORE_BINARY_NAME .. ": Downloading")
 
-  download_file_async(url, download_file_path, download_progress, function(download_success)
+  local retried = false
+  local function on_download(download_success, http_code)
+    -- Keep a saved token across updates. Drop it only when the server rejects it.
+    if not download_success and (http_code == 401 or http_code == 403) and not retried then
+      retried = true
+      if token_source ~= "env" then delete_saved_license_token() end
+      local next_token = prompt_license_token()
+      if not next_token then
+        download_finish("Download failed")
+        Logger.error("Kulala Core license token was rejected. Set KULALA_CORE_LICENSE_TOKEN to download kulala-core.")
+        if callback then callback(false) end
+        return
+      end
+      token = next_token
+      token_source = "prompt"
+      download_file_async(url, download_file_path, download_progress, on_download, token)
+      return
+    end
+
     -- Only proceed with extraction if download succeeded
     if not download_success then
       download_finish("Download failed")
@@ -533,43 +726,99 @@ M.install = function(version, callback)
       time_str = string.format("%d.%03ds", seconds, milliseconds)
     end
 
+    local bin_path = join_paths(bin_dir, M.get_bin_name())
     if vim.fn.filereadable(download_file_path) == 1 then
+      if not checksum_matches(download_file_path, expected_checksum) then
+        if callback then callback() end
+        return
+      end
       -- make it executable
       if not IS_WINDOWS then vim.fn.system { "chmod", "+x", download_file_path } end
       -- Rename the downloaded file
-      vim.fn.rename(download_file_path, join_paths(bin_dir, M.get_bin_name()))
+      vim.fn.rename(download_file_path, bin_path)
     else
       Logger.error("Downloaded file not found at expected location: " .. download_file_path)
       if callback then callback(false) end
       return
     end
 
-    Logger.notify(string.format("Backend installed successfully in %s!", time_str), Logger.LoggerLogLevels.info)
-    -- Set the installed version after successful installation
-    set_installed_version(version)
-    require("kulala.config").set_autocomands()
-    require("kulala.cmd.lsp").restart_all()
-    if callback then callback() end
-  end)
+    probe_installed_binary(bin_path, function(ok)
+      if not ok then
+        report_launch_failure(bin_path)
+        if callback then callback(false) end
+        return
+      end
+
+      Logger.notify(string.format("Backend installed successfully in %s!", time_str), Logger.LoggerLogLevels.info)
+      -- Set the installed version after the binary has actually started.
+      set_installed_version(version)
+      require("kulala.config").set_autocomands()
+      require("kulala.cmd.lsp").restart_all()
+      if callback then callback() end
+    end)
+  end
+
+  download_file_async(url, download_file_path, download_progress, on_download, token)
 end
 
 M.is_up_to_date = function()
   return binary_exists() and version_matches()
 end
 
+local install_inflight = false
+local install_waiters = {}
+
+local function finish_install(callback)
+  install_inflight = false
+  local waiters = install_waiters
+  install_waiters = {}
+
+  if not binary_exists() then
+    Logger.error("Backend installation failed: binary is not accessible")
+    return
+  end
+  if
+    not checksum_matches(
+      M.get_bin_path(),
+      require("kulala.globals.versions.backend_checksums")[M.get_release_bin_name()]
+    )
+  then
+    Logger.error("Backend installation failed: checksum mismatch after installation")
+    return
+  end
+  if not version_matches() then
+    Logger.error("Backend installation failed: version mismatch after installation")
+    return
+  end
+
+  if Parser.is_up_to_date() then Api.trigger("ready") end
+
+  if callback then callback() end
+  for _, waiter in ipairs(waiters) do
+    waiter()
+  end
+end
+
 ---Ensure the backend binary is installed and up-to-date
 ---If development mode is enabled, skip the check (assumes running from source)
 ---If binary is not found or version doesn't match, download the required version
+---Concurrent callers share one download and one license prompt.
 ---@param callback function|nil Optional callback to run after installation
 M.ensure_installed = function(callback)
   local required_version = get_required_version()
-  local required_version_tag = get_required_version_tag()
 
   -- Check if binary exists and version matches
   if binary_exists() and version_matches() then
     if callback then callback() end
     return
   end
+
+  if install_inflight then
+    if callback then table.insert(install_waiters, callback) end
+    return
+  end
+
+  install_inflight = true
 
   -- Determine reason for download
   local reason
@@ -581,15 +830,8 @@ M.ensure_installed = function(callback)
   end
 
   Logger.notify(string.format("%s. Downloading %s...", reason, required_version), Logger.LoggerLogLevels.info)
-  M.install(required_version_tag, function()
-    -- Verify the binary was successfully installed before calling the callback
-    if binary_exists() and version_matches() then
-      if Parser.is_up_to_date() then Api.trigger("ready") end
-      if callback then callback() end
-    else
-      Logger.error("Backend installation failed or binary is not accessible")
-      if callback then callback() end
-    end
+  M.install(required_version, function()
+    finish_install(callback)
   end)
 end
 

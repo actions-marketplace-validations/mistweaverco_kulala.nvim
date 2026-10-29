@@ -49,6 +49,8 @@ M.data = nil
 ---@field assert_output table
 ---@field assert_status boolean
 ---
+---@field history_id number|nil -- kulala-core request_history row id
+---
 ---@field file string -- path of the file of the request
 ---@field buf number
 ---@field buf_name string
@@ -87,7 +89,7 @@ local function default_data()
   return {
     selected_env = nil, -- string - name of selected env
     http_client_env = nil, -- table of envs from http-client.env.json
-    http_client_env_shared = nil, -- `$kulalaShared` variables (excludes `$kulalaDefaultHeaders`)
+    http_client_env_shared = nil, -- `$kulala.env` variables
     env = {}, -- table of envs from document sources
     scope_nr = nil, -- number - buffer number of the current scope
   }

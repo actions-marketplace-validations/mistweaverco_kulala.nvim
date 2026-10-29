@@ -409,6 +409,12 @@ local function save_response(request_status, parsed_request)
   local headers_from_snapshot = type(request_status._kulala_headers_snapshot) == "string"
 
   local responses = DB.global_update().responses
+  for i = #responses, 1, -1 do
+    if responses[i].id == id and responses[i]._kulala_http_stream then
+      table.remove(responses, i)
+      break
+    end
+  end
   if #responses > 0 and responses[#responses].id == id and responses[#responses].code == -1 then
     -- Drop unfinished chunked response for the same request id.
     table.remove(responses)
@@ -498,6 +504,7 @@ local function save_response(request_status, parsed_request)
     _kulala_core = parsed_request._kulala_core == true,
     _kulala_redirect_chain = parsed_request._kulala_redirect_chain,
     _kulala_verbose_trace = parsed_request._kulala_verbose_trace,
+    history_id = type(request_status._kulala_history_id) == "number" and request_status._kulala_history_id or nil,
     _kulala_body_type = request_status._kulala_body_type,
     _kulala_media_type = request_status._kulala_media_type,
     _kulala_binary = request_status._kulala_binary,
@@ -668,9 +675,17 @@ end
 ---@return string
 local function kulala_core_body_text(body)
   if type(body) == "table" and body.type == "json" then
-    if type(body.formatted) == "string" then return body.formatted end
-    local encoded = vim.json.encode(body.content)
-    return encoded or vim.inspect(body.content)
+    if type(body.formatted) == "string" and body.formatted ~= "" then return body.formatted end
+    if body.content ~= nil and KULALA_CORE.enabled() then
+      local fmt = CONFIG.get().response_format or {}
+      local formatted = KULALA_CORE.format_json(body.content, {
+        indent = fmt.indent,
+        expand_tabs = fmt.expand_tabs,
+        sort_keys = fmt.sort_keys,
+      })
+      if type(formatted) == "string" then return formatted end
+    end
+    return vim.inspect(body.content)
   end
   if type(body) == "table" and body.type == "text" then return body.content or "" end
   if type(body) == "table" and body.type == "binary" then return binary_body_note(body) end
@@ -870,6 +885,9 @@ local function kulala_core_collect_prompt_inputs(prompt)
   return out
 end
 
+---Collect inputs for a kulala-core OAuth or `@kulala-prompt` payload.
+M.collect_kulala_core_prompt_inputs = kulala_core_collect_prompt_inputs
+
 ---@param requests DocumentRequest[]
 ---@return table[]|nil limit kulala-core run limit (name filters), or nil when empty
 local function kulala_core_batch_limit(requests)
@@ -1057,7 +1075,13 @@ local function kulala_core_deliver_result(item, target, duration_wall, callback,
       _kulala_core = true,
       _kulala_media_type = "application/json",
     }
-    target.body_computed = item.initialMessage or target.body
+    if type(item.messages) == "table" then
+      target._ws_script_messages = item.messages
+      if type(item.timeoutMs) == "number" then target._ws_timeout_ms = item.timeoutMs end
+      target.body_computed = type(item.initialMessage) == "string" and item.initialMessage or nil
+    else
+      target.body_computed = item.initialMessage or target.body
+    end
     WEBSOCKET.connect(target, response, function(success, duration)
       handle_response({
         code = success and 0 or 1,
@@ -1099,6 +1123,7 @@ local function kulala_core_deliver_result(item, target, duration_wall, callback,
     _kulala_script_console = console,
     _kulala_binary = binary,
     _kulala_image_path = image_path,
+    _kulala_history_id = type(item.historyId) == "number" and item.historyId or nil,
   }, target, callback, advance_queue, invoke_ui_callback)
 end
 
@@ -1268,9 +1293,12 @@ process_request_kulala_core = function(parsed_request, callback, retry_depth, ru
 
   local start_time = vim.uv.hrtime()
   local run_payload, core_cwd = build_kulala_core_run_payload(parsed_request, run_opts)
+  local HTTP_STREAM = require("kulala.cmd.http_stream")
+  HTTP_STREAM.reset()
 
   KULALA_CORE.run_async(run_payload, core_cwd, function(wrapper, err)
     vim.schedule(function()
+      HTTP_STREAM.reset()
       if err then
         handle_response({
           code = 1,
@@ -1282,7 +1310,21 @@ process_request_kulala_core = function(parsed_request, callback, retry_depth, ru
       end
       finish_kulala_core_wrapper(wrapper, parsed_request, callback, retry_depth, start_time, core_cwd, run_opts)
     end)
-  end)
+  end, {
+    on_http_stream = function(event)
+      local targets = kulala_core_run_targets(parsed_request)
+      local target = parsed_request
+      if type(event.blockName) == "string" and event.blockName ~= "" then
+        for _, candidate in ipairs(targets) do
+          if candidate._kulala_block_name == event.blockName then
+            target = candidate
+            break
+          end
+        end
+      end
+      HTTP_STREAM.on_event(event, target, callback)
+    end,
+  })
 end
 
 ---Executes DocumentRequest
@@ -1319,30 +1361,15 @@ local function execute_before_request(request)
   end
 end
 
----Parses and executes DocumentRequest/s:
----if requests is nil then it parses the current document
----if line_nr is nil then runs the first request in the list (used for replaying last request)
----if line_nr > 0 then runs the request from current buffer around the line number
----if line_nr is 0 then runs all or visually selected requests
 ---@param requests? DocumentRequest[]|nil
 ---@param line_nr? number|nil
 ---@param callback function
 ---@param run_opts? KulalaCoreRunOpts
-M.run_parser = function(requests, line_nr, callback, run_opts)
+local function run_parser(requests, line_nr, callback, run_opts)
   M.queue:reset()
 
-  if not KULALA_CORE.enabled() then
-    local msg = "kulala-core not found. "
-      .. "Either let kulala.nvim auto-download and install kulala-core or set `kulala_core.path` in setup."
-    local configured = CONFIG.get().kulala_core.path
-    if type(configured) == "string" and vim.trim(configured) ~= "" then
-      msg = ("kulala_core.path is not executable: %s"):format(vim.trim(configured))
-    end
-    return Logger.error(msg, 1, { report = true })
-  end
-
   if not requests then requests = DOCUMENT_PARSER.get_document() end
-  if not requests then return Logger.error("No requests found in the document") end
+  if not requests then return end
 
   requests = DOCUMENT_PARSER.get_request_at(requests, line_nr)
   if #requests == 0 then return Logger.error("No request found at current line") end
@@ -1385,6 +1412,21 @@ M.run_parser = function(requests, line_nr, callback, run_opts)
   end
 
   M.queue:run_next()
+end
+
+---Parses and executes DocumentRequest/s:
+---if requests is nil then it parses the current document
+---if line_nr is nil then runs the first request in the list (used for replaying last request)
+---if line_nr > 0 then runs the request from current buffer around the line number
+---if line_nr is 0 then runs all or visually selected requests
+---@param requests? DocumentRequest[]|nil
+---@param line_nr? number|nil
+---@param callback function
+---@param run_opts? KulalaCoreRunOpts
+M.run_parser = function(requests, line_nr, callback, run_opts)
+  KULALA_CORE.guard(function()
+    run_parser(requests, line_nr, callback, run_opts)
+  end)
 end
 
 ---Deliver a single kulala-core result item (e.g. OpenAPI operation run) into the response UI.
